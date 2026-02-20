@@ -1,0 +1,38 @@
+[package]
+name = "kira-scio"
+description = "Deterministic single-cell input reader stack for MTX/H5AD/BD Rhapsody in Kira tools."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/ARyaskov/kira-scio"
+keywords = [
+    "bioinformatics",
+    "single-cell",
+    "mtx",
+    "h5ad",
+    "parser"
+]
+categories = [
+    "science",
+    "science::bioinformatics",
+    "command-line-utilities",
+    "algorithms"
+]
+
+[lib]
+name = "kira_scio"
+path = "src/lib.rs"
+
+[features]
+default = []
+h5ad = ["dep:hdf5"]
+loom = []
+
+[dependencies]
+flate2 = "1"
+unicode-normalization = "0.1"
+
+[dependencies.hdf5]
+version = "0.8"
+optional = true
