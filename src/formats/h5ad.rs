@@ -56,14 +56,9 @@ pub fn read_matrix(path: &Path, strict: bool) -> ScioResult<SoaCscMatrix> {
 }
 
 #[cfg(feature = "h5ad")]
-pub(crate) fn read_all(
-    path: &Path,
-    strict: bool,
-) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
-    let file = File::open(path).map_err(|e| {
-        ScioError::new(ErrorCode::Io, e.to_string())
-            .with_path(path.to_path_buf())
-    })?;
+pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
+    let file = File::open(path)
+        .map_err(|e| ScioError::new(ErrorCode::Io, e.to_string()).with_path(path.to_path_buf()))?;
 
     let barcodes = read_index_strings(&file, "obs", BARCODE_FALLBACKS)?
         .into_iter()
@@ -124,10 +119,7 @@ pub(crate) fn read_all(
 }
 
 #[cfg(not(feature = "h5ad"))]
-pub(crate) fn read_all(
-    path: &Path,
-    _strict: bool,
-) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
+pub(crate) fn read_all(path: &Path, _strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
     Err(ScioError::new(
         ErrorCode::FeatureDisabled,
         "h5ad feature is disabled for this build",
@@ -140,16 +132,10 @@ const BARCODE_FALLBACKS: &[&str] = &[
     "_index", "index", "barcode", "barcodes", "cell_id", "cellid",
 ];
 #[cfg(feature = "h5ad")]
-const GENE_ID_FALLBACKS: &[&str] = &[
-    "_index", "index", "gene_ids", "gene_id", "feature_id",
-];
+const GENE_ID_FALLBACKS: &[&str] = &["_index", "index", "gene_ids", "gene_id", "feature_id"];
 
 #[cfg(feature = "h5ad")]
-fn read_index_strings(
-    file: &File,
-    group: &str,
-    candidates: &[&str],
-) -> ScioResult<Vec<String>> {
+fn read_index_strings(file: &File, group: &str, candidates: &[&str]) -> ScioResult<Vec<String>> {
     use hdf5::types::VarLenUnicode;
 
     for cand in candidates {
@@ -367,11 +353,7 @@ fn check_and_collect(
 }
 
 #[cfg(feature = "h5ad")]
-fn read_dense_x(
-    dataset: &hdf5::Dataset,
-    strict: bool,
-    source: &Path,
-) -> ScioResult<SoaCscMatrix> {
+fn read_dense_x(dataset: &hdf5::Dataset, strict: bool, source: &Path) -> ScioResult<SoaCscMatrix> {
     use ndarray::Ix2;
     let shape = dataset.shape();
     if shape.len() != 2 {

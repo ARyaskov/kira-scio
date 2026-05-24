@@ -1,7 +1,7 @@
 [package]
 name = "kira-scio"
 description = "Deterministic single-cell input reader stack for MTX/H5AD/BD Rhapsody in Kira tools."
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -24,9 +24,6 @@ categories = [
 name = "kira_scio"
 path = "src/lib.rs"
 
-[features]
-default = []
-h5ad = ["dep:hdf5"]
 # `loom` is reserved for a future reader; the current `formats::loom` module
 # is a placeholder that returns FeatureDisabled regardless of the flag.
 
@@ -41,6 +38,14 @@ itoa = "1"
 [dependencies.hdf5]
 version = "0.8"
 optional = true
+
+[dependencies.ndarray]
+version = "0.15"
+optional = true
+
+[features]
+default = []
+h5ad = ["dep:hdf5", "dep:ndarray"]
 
 [profile.release]
 opt-level = 3

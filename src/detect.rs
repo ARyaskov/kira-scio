@@ -118,17 +118,23 @@ fn classify_sniffed_lines(lines: &[String]) -> DetectedFormat {
     // MTX header: "rows cols nnz" on a single whitespace-separated line.
     let header_cols = header.split_whitespace().count();
     if header_cols == 3
-        && header.split_whitespace().all(|t| t.parse::<usize>().is_ok())
+        && header
+            .split_whitespace()
+            .all(|t| t.parse::<usize>().is_ok())
     {
         return DetectedFormat::Mtx10x;
     }
-    
+
     let header_tabs = header.bytes().filter(|c| *c == b'\t').count();
     let header_commas = header.bytes().filter(|c| *c == b',').count();
     if header_tabs == 0 && header_commas == 0 {
         return DetectedFormat::DenseTsvCsv;
     }
-    let delim: u8 = if header_commas > header_tabs { b',' } else { b'\t' };
+    let delim: u8 = if header_commas > header_tabs {
+        b','
+    } else {
+        b'\t'
+    };
 
     // Heuristic 1: a leading comment line is the strongest BD Rhapsody signal.
     if saw_comment {
@@ -206,15 +212,15 @@ mod tests {
             "cellA\tcellB".to_string(),
             "GENE\t1.0\t2.5".to_string(),
         ];
-        assert_eq!(classify_sniffed_lines(&lines), DetectedFormat::BdRhapsodyWta);
+        assert_eq!(
+            classify_sniffed_lines(&lines),
+            DetectedFormat::BdRhapsodyWta
+        );
     }
 
     #[test]
     fn sniffer_defaults_to_dense_for_integers() {
-        let lines = vec![
-            "cellA\tcellB".to_string(),
-            "GENE\t1\t2".to_string(),
-        ];
+        let lines = vec!["cellA\tcellB".to_string(), "GENE\t1\t2".to_string()];
         assert_eq!(classify_sniffed_lines(&lines), DetectedFormat::DenseTsvCsv);
     }
 

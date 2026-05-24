@@ -166,8 +166,7 @@ struct ParsedMtx {
 
 impl ParsedMtx {
     fn into_csc(mut self) -> SoaCscMatrix {
-        self.triplets
-            .sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        self.triplets.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
 
         let n_cells = self.n_cells;
         let nnz = self.triplets.len();
@@ -331,12 +330,10 @@ fn parse_matrix_market(
     }
 
     let rows = n_rows.ok_or_else(|| {
-        ScioError::new(ErrorCode::ParseError, "missing MTX header")
-            .with_path(source.to_path_buf())
+        ScioError::new(ErrorCode::ParseError, "missing MTX header").with_path(source.to_path_buf())
     })?;
     let cols = n_cols.ok_or_else(|| {
-        ScioError::new(ErrorCode::ParseError, "missing MTX header")
-            .with_path(source.to_path_buf())
+        ScioError::new(ErrorCode::ParseError, "missing MTX header").with_path(source.to_path_buf())
     })?;
 
     let sparsity = if rows == 0 || cols == 0 {

@@ -49,7 +49,6 @@ impl ScioError {
 
 impl Clone for ScioError {
     fn clone(&self) -> Self {
-        
         Self {
             code: self.code,
             message: self.message.clone(),

@@ -108,21 +108,17 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
                     let _ = i;
                 }
                 if gene_ids.is_empty() {
-                    return Err(ScioError::new(
-                        ErrorCode::ParseError,
-                        "dense header has no genes",
-                    )
-                    .with_path(path.to_path_buf()));
+                    return Err(
+                        ScioError::new(ErrorCode::ParseError, "dense header has no genes")
+                            .with_path(path.to_path_buf()),
+                    );
                 }
             } else {
                 // Row-major. First cell: label ("gene"/"feature"), empty
                 // (BD Rhapsody `\tC1\tC2`), or already a barcode.
                 let starts_with_label =
                     first_col_looks_like_gene_header(header.first().map(|s| s.as_str()));
-                let starts_with_empty = header
-                    .first()
-                    .map(|s| s.is_empty())
-                    .unwrap_or(false);
+                let starts_with_empty = header.first().map(|s| s.is_empty()).unwrap_or(false);
                 let mut raw = if starts_with_label || starts_with_empty {
                     header.into_iter().skip(1).collect::<Vec<_>>()
                 } else {

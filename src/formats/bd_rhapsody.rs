@@ -60,10 +60,7 @@ pub fn read_matrix(path: &Path, strict: bool) -> ScioResult<SoaCscMatrix> {
     crate::formats::dense::read_matrix(&resolved, strict)
 }
 
-pub(crate) fn read_all(
-    path: &Path,
-    strict: bool,
-) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
+pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
     let resolved = resolve_bd_input_path(path)?;
     let (mut md, mx) = crate::formats::dense::parse_dense_full(&resolved, strict)?;
     md.format = "bd_rhapsody_wta".to_string();

@@ -64,7 +64,10 @@ fn s2_duplicate_genes_are_kept_in_strict() {
     )
     .read_all()
     .unwrap();
-    assert_eq!(data.metadata.gene_symbols, vec!["MT-ND1", "MT-ND1", "NDUFS1"]);
+    assert_eq!(
+        data.metadata.gene_symbols,
+        vec!["MT-ND1", "MT-ND1", "NDUFS1"]
+    );
 }
 
 /// content sniffing should classify a `.txt` file with a leading comment
@@ -72,14 +75,20 @@ fn s2_duplicate_genes_are_kept_in_strict() {
 #[test]
 fn s3_content_sniff_promotes_bd_for_floats() {
     let p = temp_file("s3a", "txt", "#meta\ncellA\tcellB\nGENE1\t1.0\t2.5\n");
-    assert_eq!(detect_input_format(&p).unwrap(), DetectedFormat::BdRhapsodyWta);
+    assert_eq!(
+        detect_input_format(&p).unwrap(),
+        DetectedFormat::BdRhapsodyWta
+    );
 }
 
 /// a plain integer-only `.txt` should default to DenseTsvCsv, **not** BD.
 #[test]
 fn s3_content_sniff_keeps_integers_as_dense() {
     let p = temp_file("s3b", "txt", "cellA\tcellB\nGENE1\t1\t2\n");
-    assert_eq!(detect_input_format(&p).unwrap(), DetectedFormat::DenseTsvCsv);
+    assert_eq!(
+        detect_input_format(&p).unwrap(),
+        DetectedFormat::DenseTsvCsv
+    );
 }
 
 /// file whose name contains `_raw_counts.tsv` (anywhere) should resolve
@@ -92,7 +101,10 @@ fn s3_filename_substring_matches_bd() {
         .as_nanos();
     let p = std::env::temp_dir().join(format!("sample_raw_counts.tsv_{ts}.txt"));
     write(&p, "gene\tcellA\tcellB\nGENE1\t1\t2\n");
-    assert_eq!(detect_input_format(&p).unwrap(), DetectedFormat::BdRhapsodyWta);
+    assert_eq!(
+        detect_input_format(&p).unwrap(),
+        DetectedFormat::BdRhapsodyWta
+    );
 }
 
 /// dense parser must treat a leading empty header cell (`\tC1\tC2`) as a
