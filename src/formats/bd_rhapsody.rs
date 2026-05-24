@@ -1,3 +1,5 @@
+//! BD Rhapsody WTA dense reader — thin shim over `formats::dense`.
+
 use std::path::{Path, PathBuf};
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
@@ -11,7 +13,8 @@ pub fn resolve_bd_input_path(path: &Path) -> ScioResult<PathBuf> {
         return Err(ScioError::new(
             ErrorCode::InvalidInputPath,
             format!("invalid input path: {}", path.display()),
-        ));
+        )
+        .with_path(path.to_path_buf()));
     }
 
     for name in ["raw_counts.tsv.gz", "raw_counts.tsv"] {
@@ -41,6 +44,7 @@ pub fn resolve_bd_input_path(path: &Path) -> ScioResult<PathBuf> {
             ErrorCode::MissingFile,
             format!("expected raw_counts.tsv(.gz) in {}", path.display()),
         )
+        .with_path(path.to_path_buf())
     })
 }
 
@@ -54,4 +58,14 @@ pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
 pub fn read_matrix(path: &Path, strict: bool) -> ScioResult<SoaCscMatrix> {
     let resolved = resolve_bd_input_path(path)?;
     crate::formats::dense::read_matrix(&resolved, strict)
+}
+
+pub(crate) fn read_all(
+    path: &Path,
+    strict: bool,
+) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
+    let resolved = resolve_bd_input_path(path)?;
+    let (mut md, mx) = crate::formats::dense::parse_dense_full(&resolved, strict)?;
+    md.format = "bd_rhapsody_wta".to_string();
+    Ok((md, mx))
 }

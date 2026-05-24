@@ -1,24 +1,46 @@
+//! Canonical in-memory representation.
+//!
+//! `col_ptr: Vec<u64>` and `row_idx: Vec<u32>` match the on-disk
+//! `kira-shared-sc-cache` layout. Cast to `usize` for `sprs::CsMat`.
+
+use crate::error::{ErrorCode, ScioError, ScioResult};
+
 #[derive(Debug, Clone)]
 pub struct SoaCscMatrix {
     pub n_cells: usize,
     pub n_genes: usize,
-    pub col_ptr: Vec<usize>,
-    pub row_idx: Vec<usize>,
+    pub col_ptr: Vec<u64>,
+    pub row_idx: Vec<u32>,
     pub values: Vec<f32>,
 }
 
 impl SoaCscMatrix {
-    pub fn validate(&self) -> crate::error::ScioResult<()> {
+    pub fn validate(&self) -> ScioResult<()> {
         if self.col_ptr.len() != self.n_cells + 1 {
-            return Err(crate::error::ScioError::new(
-                crate::error::ErrorCode::ValidationError,
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
                 "col_ptr length must be n_cells + 1",
             ));
         }
         if self.row_idx.len() != self.values.len() {
-            return Err(crate::error::ScioError::new(
-                crate::error::ErrorCode::ValidationError,
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
                 "row_idx and values length mismatch",
+            ));
+        }
+        if let Some(&last) = self.col_ptr.last() {
+            if last as usize != self.row_idx.len() {
+                return Err(ScioError::new(
+                    ErrorCode::ValidationError,
+                    "col_ptr tail does not match nnz",
+                ));
+            }
+        }
+        let bound = self.n_genes as u32;
+        if self.row_idx.iter().any(|&r| r >= bound) {
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
+                "row_idx contains an out-of-range gene index",
             ));
         }
         Ok(())
