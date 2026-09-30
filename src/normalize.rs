@@ -2,6 +2,15 @@
 
 use unicode_normalization::UnicodeNormalization;
 
+/// UTF-8 byte order mark as it appears at the start of a decoded line.
+pub const UTF8_BOM: char = '\u{feff}';
+
+/// Strips a leading UTF-8 BOM (written by Excel and some Windows tools).
+/// Apply to the first line of a text file only.
+pub fn strip_bom(line: &str) -> &str {
+    line.strip_prefix(UTF8_BOM).unwrap_or(line)
+}
+
 pub fn normalize_barcode(raw: &str, idx: usize) -> String {
     let cleaned = nfc_trim(raw);
     if cleaned.is_empty() {
@@ -88,6 +97,14 @@ fn strip_ensembl_version(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_bom_removes_only_a_leading_mark() {
+        assert_eq!(strip_bom("\u{feff}gene\tC1"), "gene\tC1");
+        assert_eq!(strip_bom("gene\tC1"), "gene\tC1");
+        assert_eq!(strip_bom("a\u{feff}b"), "a\u{feff}b");
+        assert_eq!(strip_bom(""), "");
+    }
 
     #[test]
     fn synth_barcode_is_zero_padded() {

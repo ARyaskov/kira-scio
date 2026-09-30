@@ -13,7 +13,7 @@ use tracing::warn;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
 use crate::model::{InputMetadata, MatrixStats, SoaCscMatrix};
-use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
+use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
     let parsed = parse_dense(path, strict)?;
@@ -80,6 +80,11 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
+        let line = if line_no == 0 {
+            strip_bom(&line)
+        } else {
+            &line
+        };
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.trim().is_empty() || trimmed.trim_start().starts_with('#') {
             continue;

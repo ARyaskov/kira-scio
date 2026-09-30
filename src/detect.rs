@@ -196,8 +196,9 @@ fn sniff_first_lines(path: &Path, max_lines: usize) -> ScioResult<Vec<String>> {
     };
     let buffered = BufReader::with_capacity(8 * 1024, reader);
     let mut out = Vec::with_capacity(max_lines);
-    for line in buffered.lines().take(max_lines) {
+    for (i, line) in buffered.lines().take(max_lines).enumerate() {
         match line {
+            Ok(l) if i == 0 => out.push(crate::normalize::strip_bom(&l).to_string()),
             Ok(l) => out.push(l),
             Err(_) => break,
         }

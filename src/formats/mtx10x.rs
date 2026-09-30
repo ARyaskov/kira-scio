@@ -11,7 +11,7 @@ use tracing::warn;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
 use crate::model::{InputMetadata, MatrixStats, SoaCscMatrix};
-use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
+use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
 #[derive(Debug, Clone)]
 pub struct MtxDatasetPaths {
@@ -193,6 +193,11 @@ fn parse_matrix_market(
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
+        let line = if line_no == 0 {
+            strip_bom(&line)
+        } else {
+            &line
+        };
         let t = line.trim();
         if t.is_empty() || t.starts_with('%') {
             continue;
@@ -372,6 +377,11 @@ fn parse_features(path: &Path, strict: bool) -> ScioResult<(Vec<String>, Vec<Str
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
+        let line = if line_no == 0 {
+            strip_bom(&line)
+        } else {
+            &line
+        };
         let t = line.trim_end_matches(['\r', '\n']);
         if t.trim().is_empty() {
             continue;
@@ -413,10 +423,11 @@ fn parse_barcodes(path: &Path) -> ScioResult<Vec<String>> {
     let mut out = Vec::new();
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
+        let line = if i == 0 { strip_bom(&line) } else { &line };
         if line.trim().is_empty() {
             continue;
         }
-        out.push(normalize_barcode(&line, i));
+        out.push(normalize_barcode(line, i));
     }
     Ok(out)
 }
