@@ -33,11 +33,30 @@ impl FeatureTypeFilter {
     }
 }
 
+/// Which matrix of an AnnData file to read.
+///
+/// Public h5ad files frequently carry a normalized `X` while the raw counts
+/// live in `raw/X` or in a layer such as `layers/counts`. Check
+/// `MatrixStats::is_integer` on the result if you need counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum H5adSource {
+    /// The main matrix `/X` (default).
+    #[default]
+    X,
+    /// `raw/X`, with gene labels taken from `raw/var`.
+    RawX,
+    /// `layers/<name>`, with gene labels from `/var`.
+    Layer(String),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ReaderOptions {
     pub force_format: Option<DetectedFormat>,
     pub strict: bool,
     pub feature_types: FeatureTypeFilter,
+    /// Only consulted for H5AD inputs.
+    pub h5ad_source: H5adSource,
 }
 
 #[derive(Debug)]
@@ -116,7 +135,9 @@ impl Reader {
             DetectedFormat::DenseTsvCsv => {
                 crate::formats::dense::parse_dense_full(&self.input, strict)?
             }
-            DetectedFormat::H5ad => crate::formats::h5ad::read_all(&self.input, strict)?,
+            DetectedFormat::H5ad => {
+                crate::formats::h5ad::read_all(&self.input, strict, &self.options.h5ad_source)?
+            }
             DetectedFormat::Loom => {
                 // Stub backend; surfaces FeatureDisabled.
                 let m = crate::formats::loom::read_metadata(&self.input, strict)?;

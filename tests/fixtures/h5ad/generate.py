@@ -44,9 +44,10 @@ a.obs.index.name = "barcode"
 a.var.index.name = "gene_ids"
 write("named_index", a)
 
-# Normalized X with raw counts kept under raw/X.
+# Normalized X with raw counts kept under raw/X and in layers/counts.
 a = ad.AnnData(X=sp.csr_matrix(X), obs=obs, var=var)
 a.raw = a.copy()
+a.layers["counts"] = sp.csr_matrix(X)
 a.X = sp.csr_matrix(np.log1p(X / X.sum(axis=1, keepdims=True) * 1e4))
 write("raw_layer", a)
 

@@ -96,6 +96,7 @@ fn marginals_follow_the_feature_filter() {
             strict: true,
             force_format: None,
             feature_types: FeatureTypeFilter::GeneExpression,
+            h5ad_source: Default::default(),
         },
     )
     .read_metadata()

@@ -25,18 +25,24 @@ use crate::error::ScioResult;
 use crate::error::{ErrorCode, ScioError};
 use crate::model::{InputMetadata, SoaCscMatrix};
 
+use crate::api::H5adSource;
+
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
-    let (md, _) = read_all(path, strict)?;
+    let (md, _) = read_all(path, strict, &H5adSource::X)?;
     Ok(md)
 }
 
 pub fn read_matrix(path: &Path, strict: bool) -> ScioResult<SoaCscMatrix> {
-    let (_, mx) = read_all(path, strict)?;
+    let (_, mx) = read_all(path, strict, &H5adSource::X)?;
     Ok(mx)
 }
 
 #[cfg(not(feature = "h5ad"))]
-pub(crate) fn read_all(path: &Path, _strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
+pub(crate) fn read_all(
+    path: &Path,
+    _strict: bool,
+    _source: &H5adSource,
+) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
     Err(ScioError::new(
         ErrorCode::FeatureDisabled,
         "h5ad feature is disabled for this build",
@@ -55,6 +61,7 @@ mod imp {
     use hdf5::{Dataset, File, Group, Location};
     use tracing::warn;
 
+    use crate::api::H5adSource;
     use crate::error::{ErrorCode, ScioError, ScioResult};
     use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
     use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
@@ -83,7 +90,11 @@ mod imp {
         parse_err(e.to_string(), source)
     }
 
-    pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
+    pub(crate) fn read_all(
+        path: &Path,
+        strict: bool,
+        which: &H5adSource,
+    ) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
         if path
             .extension()
             .and_then(|e| e.to_str())
@@ -100,16 +111,37 @@ mod imp {
         })?;
         let mut report = IngestReport::default();
 
+        // Matrix location and the var group that labels its gene axis.
+        let (matrix_path, var_path): (String, &str) = match which {
+            H5adSource::X => ("X".to_string(), "var"),
+            H5adSource::RawX => ("raw/X".to_string(), "raw/var"),
+            H5adSource::Layer(name) => (format!("layers/{name}"), "var"),
+        };
+        if !file.link_exists(&matrix_path) {
+            return Err(ScioError::new(
+                ErrorCode::MissingFile,
+                format!("requested matrix /{matrix_path} is not present in the file"),
+            )
+            .with_path(path.to_path_buf()));
+        }
+
         let barcodes = read_index(&file, "obs", BARCODE_FALLBACKS, path)?
             .into_iter()
             .enumerate()
             .map(|(i, b)| normalize_barcode(&b, i))
             .collect::<Vec<_>>();
-        let gene_raw_ids = read_index(&file, "var", GENE_ID_FALLBACKS, path)?;
-        let gene_symbols_raw =
-            read_var_column(&file, GENE_SYMBOL_COLUMNS, gene_raw_ids.len(), strict, path)?;
+        let gene_raw_ids = read_index(&file, var_path, GENE_ID_FALLBACKS, path)?;
+        let gene_symbols_raw = read_var_column(
+            &file,
+            var_path,
+            GENE_SYMBOL_COLUMNS,
+            gene_raw_ids.len(),
+            strict,
+            path,
+        )?;
         let feature_types = read_var_column(
             &file,
+            var_path,
             FEATURE_TYPE_COLUMNS,
             gene_raw_ids.len(),
             strict,
@@ -134,7 +166,7 @@ mod imp {
                 .collect(),
         };
 
-        let matrix = read_x_matrix(&file, strict, path, &mut report)?;
+        let matrix = read_matrix_at(&file, &matrix_path, strict, path, &mut report)?;
         if matrix.n_cells != barcodes.len() || matrix.n_genes != gene_ids.len() {
             return Err(ScioError::new(
                 ErrorCode::DimensionMismatch,
@@ -363,12 +395,13 @@ mod imp {
     /// error in strict mode and is skipped with a warning otherwise.
     fn read_var_column(
         file: &File,
+        var_path: &str,
         candidates: &[&str],
         n_genes: usize,
         strict: bool,
         source: &Path,
     ) -> ScioResult<Option<Vec<String>>> {
-        let Ok(var) = file.group("var") else {
+        let Ok(var) = file.group(var_path) else {
             return Ok(None);
         };
         for col in candidates {
@@ -398,20 +431,24 @@ mod imp {
 
     // ---------------------------------------------------------------- matrix
 
-    fn read_x_matrix(
+    fn read_matrix_at(
         file: &File,
+        matrix_path: &str,
         strict: bool,
         source: &Path,
         report: &mut IngestReport,
     ) -> ScioResult<SoaCscMatrix> {
-        // `/X` may be a Group (sparse CSR/CSC) or a Dataset (dense).
-        if let Ok(group) = file.group("X") {
+        // The matrix may be a Group (sparse CSR/CSC) or a Dataset (dense).
+        if let Ok(group) = file.group(matrix_path) {
             return read_sparse_x(&group, strict, source, report);
         }
-        if let Ok(dataset) = file.dataset("X") {
+        if let Ok(dataset) = file.dataset(matrix_path) {
             return read_dense_x(&dataset, strict, source, report);
         }
-        Err(parse_err("missing /X (neither group nor dataset)", source))
+        Err(parse_err(
+            format!("/{matrix_path} is neither a group nor a dataset"),
+            source,
+        ))
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

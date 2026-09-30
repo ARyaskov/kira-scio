@@ -17,6 +17,7 @@ fn lenient() -> ReaderOptions {
         strict: false,
         force_format: None,
         feature_types: Default::default(),
+        h5ad_source: Default::default(),
     }
 }
 
@@ -125,6 +126,7 @@ fn structural_corruption_is_an_error_in_both_modes() {
                 strict,
                 force_format: None,
                 feature_types: Default::default(),
+                h5ad_source: Default::default(),
             },
         )
         .read_all()
@@ -175,6 +177,7 @@ fn feature_types_column_is_read_and_filterable() {
             strict: true,
             force_format: None,
             feature_types: FeatureTypeFilter::GeneExpression,
+            h5ad_source: Default::default(),
         },
     )
     .read_all()
@@ -185,4 +188,51 @@ fn feature_types_column_is_read_and_filterable() {
     assert_eq!(data.matrix.values, vec![5.0, 3.0]);
     assert_eq!(data.metadata.stats.max_count, 5.0);
     assert_eq!(data.metadata.report.excluded_features, 1);
+}
+
+#[test]
+fn matrix_source_selects_x_raw_x_or_a_layer() {
+    use kira_scio::H5adSource;
+    let opts = |src: H5adSource| ReaderOptions {
+        strict: true,
+        force_format: None,
+        feature_types: Default::default(),
+        h5ad_source: src,
+    };
+
+    // /X is log-normalized in this fixture.
+    let x = Reader::with_options(fixture("raw_layer"), opts(H5adSource::X))
+        .read_all()
+        .unwrap();
+    assert!(!x.metadata.stats.is_integer);
+
+    // raw/X and layers/counts both hold the reference counts.
+    let raw = Reader::with_options(fixture("raw_layer"), opts(H5adSource::RawX))
+        .read_all()
+        .unwrap();
+    assert_reference_matrix(&raw);
+    assert!(raw.metadata.stats.is_integer);
+    assert_eq!(raw.metadata.gene_symbols, vec!["A", "B", "C"]);
+
+    let layer = Reader::with_options(
+        fixture("raw_layer"),
+        opts(H5adSource::Layer("counts".to_string())),
+    )
+    .read_all()
+    .unwrap();
+    assert_reference_matrix(&layer);
+    assert!(layer.metadata.stats.is_integer);
+
+    // Absent sources are reported, not silently substituted.
+    let err = Reader::with_options(fixture("csr"), opts(H5adSource::RawX))
+        .read_all()
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::MissingFile);
+    let err = Reader::with_options(
+        fixture("raw_layer"),
+        opts(H5adSource::Layer("missing".to_string())),
+    )
+    .read_all()
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::MissingFile);
 }

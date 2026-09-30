@@ -28,6 +28,7 @@ fn lenient(force: Option<DetectedFormat>) -> ReaderOptions {
         strict: false,
         force_format: force,
         feature_types: Default::default(),
+        h5ad_source: Default::default(),
     }
 }
 
