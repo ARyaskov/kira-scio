@@ -134,6 +134,7 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         barcodes,
         stats,
         feature_types,
+        marginals: Default::default(),
         report,
     };
 

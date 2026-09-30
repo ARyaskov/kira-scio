@@ -25,6 +25,7 @@ pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
         barcodes: parsed.barcodes,
         stats: parsed.stats,
         feature_types: None,
+        marginals: Default::default(),
         report: parsed.report,
     })
 }
@@ -48,6 +49,7 @@ pub(crate) fn parse_dense_full(
         barcodes: parsed.barcodes,
         stats: parsed.stats,
         feature_types: None,
+        marginals: Default::default(),
         report: parsed.report,
     };
     Ok((metadata, parsed.matrix))

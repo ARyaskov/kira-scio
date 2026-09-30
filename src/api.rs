@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use crate::detect::{DetectedFormat, detect_input_format};
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{CanonicalData, InputMetadata, MatrixStats, SoaCscMatrix};
+use crate::model::{CanonicalData, InputMetadata, Marginals, MatrixStats, SoaCscMatrix};
 
 /// Which feature modalities to keep when the source declares them.
 ///
@@ -103,8 +103,9 @@ impl Reader {
     }
 
     /// Single parse of the input followed by the format-independent
-    /// post-processing (feature-type filtering). Every public reader goes
-    /// through here so labels, matrix and statistics always agree.
+    /// post-processing (feature-type filtering, marginals). Every public
+    /// reader goes through here so labels, matrix and statistics always
+    /// agree.
     fn load(&self) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
         let strict = self.options.strict;
         let (mut metadata, mut matrix) = match self.detected_format()? {
@@ -134,6 +135,7 @@ impl Reader {
             .with_path(self.input.clone()));
         }
         self.apply_feature_filter(&mut metadata, &mut matrix)?;
+        metadata.marginals = Marginals::from_matrix(&matrix);
         Ok((metadata, matrix))
     }
 

@@ -159,6 +159,7 @@ mod imp {
             barcodes,
             stats,
             feature_types,
+            marginals: Default::default(),
             report,
         };
         Ok((metadata, matrix))

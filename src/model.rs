@@ -202,6 +202,12 @@ pub struct MatrixStats {
     pub max_count: f32,
     /// `1 - nnz / (n_cells * n_genes)`; 1 for an empty shape.
     pub sparsity: f64,
+    /// Every stored value is a whole number. Raw UMI/read counts are; a
+    /// `false` here means the matrix was normalized, scaled or otherwise
+    /// transformed upstream and must not be treated as counts.
+    pub is_integer: bool,
+    /// At least one stored value is negative (scaled/centered data).
+    pub has_negative: bool,
 }
 
 impl MatrixStats {
@@ -210,10 +216,12 @@ impl MatrixStats {
         let mut total = 0f64;
         let mut min = f32::MAX;
         let mut max = f32::MIN;
+        let mut is_integer = true;
         for &v in &matrix.values {
             total += f64::from(v);
             min = min.min(v);
             max = max.max(v);
+            is_integer &= v.fract() == 0.0;
         }
         let denom = (matrix.n_cells as u64).saturating_mul(matrix.n_genes as u64);
         let sparsity = if denom == 0 {
@@ -227,8 +235,121 @@ impl MatrixStats {
             min_count: if nnz > 0 { min } else { 0.0 },
             max_count: if nnz > 0 { max } else { 0.0 },
             sparsity,
+            is_integer,
+            has_negative: nnz > 0 && min < 0.0,
         }
     }
+}
+
+/// Number of highest-count features used for [`Marginals::cell_top_fraction`].
+pub const TOP_FEATURES: usize = 50;
+
+/// Per-cell and per-gene marginals: the first-pass QC covariates every
+/// single-cell workflow derives before any biology-specific step (library
+/// size, detected features, concentration in top features; per-gene
+/// detection). Computed over stored entries of the canonical matrix.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Marginals {
+    /// Sum of stored values per cell (library size / count depth).
+    pub cell_total_counts: Vec<f64>,
+    /// Number of stored (non-zero) features per cell.
+    pub cell_n_features: Vec<u32>,
+    /// Fraction of each cell's total held by its [`TOP_FEATURES`] largest
+    /// entries; 0 for an empty cell. Only meaningful for non-negative data.
+    pub cell_top_fraction: Vec<f32>,
+    /// Sum of stored values per gene.
+    pub gene_total_counts: Vec<f64>,
+    /// Number of cells in which each gene has a stored entry.
+    pub gene_n_cells: Vec<u32>,
+}
+
+impl Marginals {
+    pub fn from_matrix(matrix: &SoaCscMatrix) -> Self {
+        let n_cells = matrix.n_cells;
+        let mut cell_total_counts = Vec::with_capacity(n_cells);
+        let mut cell_n_features = Vec::with_capacity(n_cells);
+        let mut cell_top_fraction = Vec::with_capacity(n_cells);
+        let mut gene_total_counts = vec![0f64; matrix.n_genes];
+        let mut gene_n_cells = vec![0u32; matrix.n_genes];
+        let mut scratch: Vec<f32> = Vec::new();
+
+        for w in matrix.col_ptr.windows(2) {
+            let (start, end) = (w[0] as usize, w[1] as usize);
+            let rows = &matrix.row_idx[start..end];
+            let vals = &matrix.values[start..end];
+            let mut total = 0f64;
+            for (&r, &v) in rows.iter().zip(vals) {
+                total += f64::from(v);
+                gene_total_counts[r as usize] += f64::from(v);
+                gene_n_cells[r as usize] += 1;
+            }
+            cell_total_counts.push(total);
+            cell_n_features.push(vals.len() as u32);
+            cell_top_fraction.push(top_fraction(vals, total, &mut scratch));
+        }
+
+        Self {
+            cell_total_counts,
+            cell_n_features,
+            cell_top_fraction,
+            gene_total_counts,
+            gene_n_cells,
+        }
+    }
+
+    /// Fraction of each cell's total held by the genes flagged in `mask`
+    /// (for example mitochondrial or ribosomal genes selected by the caller
+    /// from the symbols). 0 for an empty cell. `mask.len()` must equal
+    /// `n_genes`.
+    pub fn fraction_in_gene_set(matrix: &SoaCscMatrix, mask: &[bool]) -> ScioResult<Vec<f32>> {
+        if mask.len() != matrix.n_genes {
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
+                format!(
+                    "gene mask has {} entries, expected {}",
+                    mask.len(),
+                    matrix.n_genes
+                ),
+            ));
+        }
+        let mut out = Vec::with_capacity(matrix.n_cells);
+        for w in matrix.col_ptr.windows(2) {
+            let (start, end) = (w[0] as usize, w[1] as usize);
+            let mut total = 0f64;
+            let mut in_set = 0f64;
+            for (&r, &v) in matrix.row_idx[start..end]
+                .iter()
+                .zip(&matrix.values[start..end])
+            {
+                total += f64::from(v);
+                if mask[r as usize] {
+                    in_set += f64::from(v);
+                }
+            }
+            out.push(if total == 0.0 {
+                0.0
+            } else {
+                (in_set / total) as f32
+            });
+        }
+        Ok(out)
+    }
+}
+
+fn top_fraction(vals: &[f32], total: f64, scratch: &mut Vec<f32>) -> f32 {
+    if total == 0.0 || vals.is_empty() {
+        return 0.0;
+    }
+    if vals.len() <= TOP_FEATURES {
+        return 1.0;
+    }
+    scratch.clear();
+    scratch.extend_from_slice(vals);
+    // Partition so the TOP_FEATURES largest values sit at the tail.
+    let pivot = scratch.len() - TOP_FEATURES;
+    scratch.select_nth_unstable_by(pivot, |a, b| a.total_cmp(b));
+    let top: f64 = scratch[pivot..].iter().map(|&v| f64::from(v)).sum();
+    (top / total) as f32
 }
 
 /// A declared-versus-observed count.
@@ -320,6 +441,8 @@ pub struct InputMetadata {
     pub gene_symbols: Vec<String>,
     pub barcodes: Vec<String>,
     pub stats: MatrixStats,
+    /// Per-cell and per-gene marginals of the canonical matrix.
+    pub marginals: Marginals,
     /// Per-feature modality as declared by the source (10x `features.tsv`
     /// third column, anndata `var/feature_types`), e.g. `Gene Expression`,
     /// `Antibody Capture`. `None` when the source carries no such column.
@@ -471,8 +594,58 @@ mod tests {
         assert_eq!(s.min_count, 1.0);
         assert_eq!(s.max_count, 3.0);
         assert_eq!(s.sparsity, 0.5);
+        assert!(s.is_integer);
+        assert!(!s.has_negative);
         let empty = MatrixStats::from_matrix(&SoaCscMatrix::from_triplets(0, 5, vec![]).0);
         assert_eq!(empty.sparsity, 1.0);
         assert_eq!(empty.min_count, 0.0);
+        assert!(empty.is_integer);
+        assert!(!empty.has_negative);
+    }
+
+    #[test]
+    fn stats_flag_non_integer_and_negative_values() {
+        let (m, _) = SoaCscMatrix::from_triplets(1, 2, vec![(0, 0, 1.5), (0, 1, 2.0)]);
+        let s = MatrixStats::from_matrix(&m);
+        assert!(!s.is_integer);
+        assert!(!s.has_negative);
+        let (m, _) = SoaCscMatrix::from_triplets(1, 2, vec![(0, 0, -1.0), (0, 1, 2.0)]);
+        let s = MatrixStats::from_matrix(&m);
+        assert!(s.is_integer);
+        assert!(s.has_negative);
+    }
+
+    #[test]
+    fn marginals_on_a_small_matrix() {
+        // 3 cells x 3 genes; cell 2 is empty.
+        let (m, _) = SoaCscMatrix::from_triplets(
+            3,
+            3,
+            vec![(0, 0, 5.0), (0, 2, 1.0), (1, 1, 3.0), (1, 2, 2.0)],
+        );
+        let mg = Marginals::from_matrix(&m);
+        assert_eq!(mg.cell_total_counts, vec![6.0, 5.0, 0.0]);
+        assert_eq!(mg.cell_n_features, vec![2, 2, 0]);
+        assert_eq!(mg.cell_top_fraction, vec![1.0, 1.0, 0.0]);
+        assert_eq!(mg.gene_total_counts, vec![5.0, 3.0, 3.0]);
+        assert_eq!(mg.gene_n_cells, vec![1, 1, 2]);
+
+        let mito = Marginals::fraction_in_gene_set(&m, &[false, false, true]).unwrap();
+        assert!((mito[0] - 1.0 / 6.0).abs() < 1e-6);
+        assert!((mito[1] - 0.4).abs() < 1e-6);
+        assert_eq!(mito[2], 0.0);
+        assert!(Marginals::fraction_in_gene_set(&m, &[true; 2]).is_err());
+    }
+
+    #[test]
+    fn top_fraction_uses_the_largest_entries() {
+        // One cell with 60 genes: 59 ones and a single 41 -> top 50 = 41 + 49.
+        let mut triplets: Vec<(u32, u32, f32)> = (0..59).map(|g| (0, g, 1.0)).collect();
+        triplets.push((0, 59, 41.0));
+        let (m, _) = SoaCscMatrix::from_triplets(1, 60, triplets);
+        let mg = Marginals::from_matrix(&m);
+        assert_eq!(mg.cell_total_counts, vec![100.0]);
+        assert_eq!(mg.cell_n_features, vec![60]);
+        assert!((mg.cell_top_fraction[0] - 0.90).abs() < 1e-6);
     }
 }
