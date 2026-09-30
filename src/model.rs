@@ -278,6 +278,10 @@ pub struct IngestReport {
     pub entry_count_mismatch: Option<CountMismatch>,
     /// A UTF-8 byte order mark was removed from at least one text input.
     pub bom_stripped: bool,
+    /// The matrix was stored cells x genes and was transposed to the
+    /// canonical genes x cells orientation because the feature and barcode
+    /// label counts matched the swapped dimensions.
+    pub transposed: bool,
     /// Features removed by the caller's [`crate::FeatureTypeFilter`]. This is
     /// a requested selection, not a repair, so it affects neither
     /// [`Self::is_lossless`] nor [`Self::is_clean`].
@@ -303,6 +307,7 @@ impl IngestReport {
             && self.duplicate_gene_ids.is_empty()
             && self.duplicate_barcodes.is_empty()
             && !self.bom_stripped
+            && !self.transposed
     }
 }
 

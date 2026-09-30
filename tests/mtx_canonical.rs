@@ -163,3 +163,54 @@ fn header_without_entry_count_is_rejected_in_strict_mode() {
     .unwrap();
     assert_eq!(data.metadata.stats.nnz, 1);
 }
+
+/// Some exporters write Matrix Market as cells x genes. With both label
+/// files present the orientation is unambiguous and the reader transposes.
+#[test]
+fn cells_by_genes_matrix_is_transposed_when_labels_say_so() {
+    let d = temp_dir("transposed");
+    // 2 rows (cells) x 3 cols (genes): cell 1 has gene1=4, gene3=1; cell 2 has gene2=7.
+    write(
+        &d.join("matrix.mtx"),
+        "%%MatrixMarket matrix coordinate integer general\n2 3 3\n1 1 4\n1 3 1\n2 2 7\n",
+    );
+    write(&d.join("features.tsv"), "ENSG1\tA\nENSG2\tB\nENSG3\tC\n");
+    write(&d.join("barcodes.tsv"), "C1\nC2\n");
+
+    let data = Reader::new(&d).read_all().unwrap();
+    assert!(data.metadata.report.transposed);
+    assert!(data.metadata.report.is_lossless());
+    assert_eq!(data.metadata.n_cells, 2);
+    assert_eq!(data.metadata.n_genes, 3);
+    assert_eq!(data.metadata.gene_ids, vec!["ENSG1", "ENSG2", "ENSG3"]);
+    assert_eq!(data.metadata.barcodes, vec!["C1", "C2"]);
+    assert_eq!(data.matrix.col_ptr, vec![0, 2, 3]);
+    assert_eq!(data.matrix.row_idx, vec![0, 2, 1]);
+    assert_eq!(data.matrix.values, vec![4.0, 1.0, 7.0]);
+    data.matrix.validate().unwrap();
+}
+
+#[test]
+fn transposition_requires_both_label_files() {
+    let d = temp_dir("transposed_one_file");
+    write(
+        &d.join("matrix.mtx"),
+        "%%MatrixMarket matrix coordinate integer general\n2 3 1\n1 1 4\n",
+    );
+    write(&d.join("features.tsv"), "ENSG1\tA\nENSG2\tB\nENSG3\tC\n");
+    // No barcodes.tsv: the mismatch is a plain label error in strict mode.
+    let err = Reader::new(&d).read_all().unwrap_err();
+    assert_eq!(err.code, ErrorCode::DimensionMismatch);
+}
+
+#[test]
+fn correctly_oriented_matrix_is_never_transposed() {
+    let d = dataset(
+        "not_transposed",
+        "%%MatrixMarket matrix coordinate integer general\n2 2 1\n1 2 4\n",
+    );
+    let data = Reader::new(&d).read_all().unwrap();
+    assert!(!data.metadata.report.transposed);
+    assert_eq!(data.matrix.col_ptr, vec![0, 0, 1]);
+    assert_eq!(data.matrix.row_idx, vec![0]);
+}

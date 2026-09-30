@@ -71,6 +71,25 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
                 .collect();
             (synth.clone(), synth, None)
         };
+    let mut barcodes = if let Some(path) = ds.barcodes.as_ref() {
+        parse_barcodes(path, &mut report)?
+    } else {
+        (0..parsed.n_cells).map(normalize_barcode_idx).collect()
+    };
+
+    // Some exporters write the matrix as cells x genes. When both label
+    // files are present and their lengths match the swapped dimensions but
+    // not the declared ones, the orientation is unambiguous: transpose.
+    let both_label_files = (ds.features.is_some() || ds.genes.is_some()) && ds.barcodes.is_some();
+    let declared_fit = gene_ids.len() == parsed.n_genes && barcodes.len() == parsed.n_cells;
+    let swapped_fit = gene_ids.len() == parsed.n_cells
+        && barcodes.len() == parsed.n_genes
+        && parsed.n_genes != parsed.n_cells;
+    if both_label_files && !declared_fit && swapped_fit {
+        parsed.transpose();
+        report.transposed = true;
+    }
+
     // A type column shorter than the matrix cannot be trusted for filtering.
     let feature_types = feature_types.filter(|t| t.len() == parsed.n_genes);
 
@@ -91,12 +110,6 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         &ds.matrix,
         |i| normalize_gene_symbol("", None, i),
     )?;
-
-    let mut barcodes = if let Some(path) = ds.barcodes.as_ref() {
-        parse_barcodes(path, &mut report)?
-    } else {
-        (0..parsed.n_cells).map(normalize_barcode_idx).collect()
-    };
     report.relabeled_barcodes = fix_length(
         &mut barcodes,
         parsed.n_cells,
@@ -155,6 +168,9 @@ pub(crate) fn log_report(source: &Path, report: &IngestReport) {
     if !report.duplicate_gene_ids.is_empty() {
         warn!(%path, count = report.duplicate_gene_ids.len(), "duplicate gene ids kept as separate rows");
     }
+    if report.transposed {
+        warn!(%path, "matrix was stored cells x genes; transposed to genes x cells");
+    }
     if !report.duplicate_barcodes.is_empty() {
         warn!(%path, count = report.duplicate_barcodes.len(), "duplicate barcodes kept as separate columns");
     }
@@ -210,6 +226,14 @@ struct ParsedMtx {
 }
 
 impl ParsedMtx {
+    /// Swaps the gene and cell axes in place.
+    fn transpose(&mut self) {
+        std::mem::swap(&mut self.n_genes, &mut self.n_cells);
+        for t in &mut self.triplets {
+            std::mem::swap(&mut t.0, &mut t.1);
+        }
+    }
+
     /// Returns the canonical matrix and the number of merged duplicate
     /// coordinates (summed per Matrix Market convention).
     fn into_csc(self) -> (SoaCscMatrix, usize) {
