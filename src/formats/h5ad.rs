@@ -114,6 +114,7 @@ pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         gene_symbols,
         barcodes,
         stats,
+        report: crate::model::IngestReport::default(),
     };
     Ok((metadata, matrix))
 }

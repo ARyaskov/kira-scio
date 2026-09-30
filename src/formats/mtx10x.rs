@@ -10,7 +10,7 @@ use rustc_hash::FxHashSet;
 use tracing::warn;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{InputMetadata, MatrixStats, SoaCscMatrix};
+use crate::model::{CountMismatch, IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
 use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
 #[derive(Debug, Clone)]
@@ -57,12 +57,13 @@ pub fn read_matrix(path: &Path, strict: bool) -> ScioResult<SoaCscMatrix> {
 pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
     let ds = discover(path)?;
     let matrix_reader = open_maybe_gz_existing(&ds.matrix)?;
-    let parsed = parse_matrix_market(matrix_reader, &ds.matrix, strict)?;
+    let mut parsed = parse_matrix_market(matrix_reader, &ds.matrix, strict)?;
+    let mut report = std::mem::take(&mut parsed.report);
 
     let (mut gene_ids, mut gene_symbols) = if let Some(features_path) = ds.features.as_ref() {
-        parse_features(features_path, strict)?
+        parse_features(features_path, strict, &mut report)?
     } else if let Some(genes_path) = ds.genes.as_ref() {
-        parse_features(genes_path, strict)?
+        parse_features(genes_path, strict, &mut report)?
     } else {
         let synth: Vec<String> = (0..parsed.n_genes)
             .map(|i| normalize_gene_id("", None, i))
@@ -70,7 +71,7 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         (synth.clone(), synth)
     };
 
-    fix_length(
+    report.relabeled_genes = fix_length(
         &mut gene_ids,
         parsed.n_genes,
         strict,
@@ -78,6 +79,7 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         &ds.matrix,
         |i| normalize_gene_id("", None, i),
     )?;
+    // Symbols come from the same file as ids, so they share the mismatch.
     fix_length(
         &mut gene_symbols,
         parsed.n_genes,
@@ -88,11 +90,11 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
     )?;
 
     let mut barcodes = if let Some(path) = ds.barcodes.as_ref() {
-        parse_barcodes(path)?
+        parse_barcodes(path, &mut report)?
     } else {
         (0..parsed.n_cells).map(normalize_barcode_idx).collect()
     };
-    fix_length(
+    report.relabeled_barcodes = fix_length(
         &mut barcodes,
         parsed.n_cells,
         strict,
@@ -102,15 +104,10 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
     )?;
 
     let (matrix, merged_duplicates) = parsed.into_csc();
-    if merged_duplicates > 0 {
-        warn!(
-            path = %ds.matrix.display(),
-            merged_duplicates,
-            "MTX contained duplicate coordinates; values were summed"
-        );
-    }
+    report.merged_duplicates = merged_duplicates;
     matrix.validate()?;
     let stats = MatrixStats::from_matrix(&matrix);
+    log_report(&ds.matrix, &report);
 
     let metadata = InputMetadata {
         format: "mtx10x".to_string(),
@@ -120,6 +117,7 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         gene_symbols,
         barcodes,
         stats,
+        report,
     };
 
     Ok((metadata, matrix))
@@ -129,6 +127,37 @@ fn normalize_barcode_idx(idx: usize) -> String {
     crate::normalize::synth_barcode(idx)
 }
 
+/// One warning per repair category, with counts rather than per-entry noise.
+pub(crate) fn log_report(source: &Path, report: &IngestReport) {
+    let path = source.display();
+    if report.dropped_out_of_range > 0 {
+        warn!(%path, count = report.dropped_out_of_range, "dropped entries with out-of-range coordinates");
+    }
+    if report.dropped_non_finite > 0 {
+        warn!(%path, count = report.dropped_non_finite, "dropped non-finite values");
+    }
+    if report.merged_duplicates > 0 {
+        warn!(%path, count = report.merged_duplicates, "duplicate coordinates were summed");
+    }
+    if let Some(m) = report.entry_count_mismatch {
+        warn!(%path, expected = m.expected, found = m.found, "entry count does not match header");
+    }
+    if let Some(m) = report.relabeled_genes {
+        warn!(%path, expected = m.expected, found = m.found, "gene label count resized to matrix");
+    }
+    if let Some(m) = report.relabeled_barcodes {
+        warn!(%path, expected = m.expected, found = m.found, "barcode count resized to matrix");
+    }
+    if !report.duplicate_gene_ids.is_empty() {
+        warn!(%path, count = report.duplicate_gene_ids.len(), "duplicate gene ids kept as separate rows");
+    }
+    if !report.duplicate_barcodes.is_empty() {
+        warn!(%path, count = report.duplicate_barcodes.len(), "duplicate barcodes kept as separate columns");
+    }
+}
+
+/// Resizes a label vector to the matrix dimension. Returns the recorded
+/// mismatch in lenient mode; strict mode errors instead.
 fn fix_length(
     out: &mut Vec<String>,
     expected: usize,
@@ -136,10 +165,14 @@ fn fix_length(
     label: &'static str,
     source: &Path,
     synth: impl Fn(usize) -> String,
-) -> ScioResult<()> {
+) -> ScioResult<Option<CountMismatch>> {
     if out.len() == expected {
-        return Ok(());
+        return Ok(None);
     }
+    let mismatch = CountMismatch {
+        expected,
+        found: out.len(),
+    };
     if strict {
         return Err(ScioError::new(
             ErrorCode::DimensionMismatch,
@@ -153,13 +186,13 @@ fn fix_length(
         )
         .with_path(source.to_path_buf()));
     }
-    out.resize_with(expected, || "".to_string());
+    out.resize_with(expected, String::new);
     for (i, v) in out.iter_mut().enumerate() {
         if v.is_empty() {
             *v = synth(i);
         }
     }
-    Ok(())
+    Ok(Some(mismatch))
 }
 
 /// Intermediate triplet form; `into_csc()` canonicalizes into CSC.
@@ -168,6 +201,8 @@ struct ParsedMtx {
     n_cells: usize,
     /// `(col, row, value)` triplets in file order.
     triplets: Vec<(u32, u32, f32)>,
+    /// Repairs recorded while scanning the matrix file.
+    report: IngestReport,
 }
 
 impl ParsedMtx {
@@ -188,13 +223,14 @@ fn parse_matrix_market(
     let mut nnz_hint = None::<usize>;
     let mut entries_seen = 0usize;
     let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
-
-    let mut saw_nonfinite = false;
+    let mut report = IngestReport::default();
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
         let line = if line_no == 0 {
-            strip_bom(&line)
+            let stripped = strip_bom(&line);
+            report.bom_stripped |= stripped.len() != line.len();
+            stripped
         } else {
             &line
         };
@@ -235,6 +271,7 @@ fn parse_matrix_market(
                 None if strict => return Err(header_err(source, line_no)),
                 None => {}
             }
+            SoaCscMatrix::check_dims(c, r).map_err(|e| e.with_path(source.to_path_buf()))?;
             n_rows = Some(r);
             n_cols = Some(c);
             continue;
@@ -287,15 +324,18 @@ fn parse_matrix_market(
             if strict {
                 return Err(ScioError::new(
                     ErrorCode::ValidationError,
-                    format!("index out of range at line {}", line_no + 1),
+                    format!(
+                        "index out of range at line {} (use strict=false to drop)",
+                        line_no + 1
+                    ),
                 )
                 .with_path(source.to_path_buf()));
             }
+            report.dropped_out_of_range += 1;
             continue;
         }
 
         if !val.is_finite() {
-            saw_nonfinite = true;
             if strict {
                 return Err(ScioError::new(
                     ErrorCode::ValidationError,
@@ -306,19 +346,15 @@ fn parse_matrix_market(
                 )
                 .with_path(source.to_path_buf()));
             }
+            report.dropped_non_finite += 1;
             continue;
         }
 
-        if val != 0.0 {
+        if val == 0.0 {
+            report.explicit_zeros += 1;
+        } else {
             triplets.push((col as u32, row as u32, val));
         }
-    }
-
-    if saw_nonfinite && !strict {
-        warn!(
-            path = %source.display(),
-            "MTX contained non-finite values; dropped (strict=false)"
-        );
     }
 
     if let Some(expected) = nnz_hint
@@ -334,12 +370,10 @@ fn parse_matrix_market(
             )
             .with_path(source.to_path_buf()));
         }
-        warn!(
-            path = %source.display(),
+        report.entry_count_mismatch = Some(CountMismatch {
             expected,
-            found = entries_seen,
-            "MTX entry count does not match header (strict=false)"
-        );
+            found: entries_seen,
+        });
     }
 
     let rows = n_rows.ok_or_else(|| {
@@ -353,6 +387,7 @@ fn parse_matrix_market(
         n_genes: rows,
         n_cells: cols,
         triplets,
+        report,
     })
 }
 
@@ -369,7 +404,11 @@ fn header_err(source: &Path, line_no: usize) -> ScioError {
 }
 
 /// Returns `(gene_ids, gene_symbols)`; single-column rows reuse the id.
-fn parse_features(path: &Path, strict: bool) -> ScioResult<(Vec<String>, Vec<String>)> {
+fn parse_features(
+    path: &Path,
+    strict: bool,
+    report: &mut IngestReport,
+) -> ScioResult<(Vec<String>, Vec<String>)> {
     let reader = open_maybe_gz_existing(path)?;
     let mut ids = Vec::<String>::new();
     let mut symbols = Vec::<String>::new();
@@ -378,7 +417,9 @@ fn parse_features(path: &Path, strict: bool) -> ScioResult<(Vec<String>, Vec<Str
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
         let line = if line_no == 0 {
-            strip_bom(&line)
+            let stripped = strip_bom(&line);
+            report.bom_stripped |= stripped.len() != line.len();
+            stripped
         } else {
             &line
         };
@@ -418,12 +459,18 @@ fn parse_features(path: &Path, strict: bool) -> ScioResult<(Vec<String>, Vec<Str
     Ok((ids, symbols))
 }
 
-fn parse_barcodes(path: &Path) -> ScioResult<Vec<String>> {
+fn parse_barcodes(path: &Path, report: &mut IngestReport) -> ScioResult<Vec<String>> {
     let reader = open_maybe_gz_existing(path)?;
     let mut out = Vec::new();
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
-        let line = if i == 0 { strip_bom(&line) } else { &line };
+        let line = if i == 0 {
+            let stripped = strip_bom(&line);
+            report.bom_stripped |= stripped.len() != line.len();
+            stripped
+        } else {
+            &line
+        };
         if line.trim().is_empty() {
             continue;
         }

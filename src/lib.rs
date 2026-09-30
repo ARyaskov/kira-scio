@@ -16,4 +16,6 @@ pub use formats::mtx10x::{
     MtxDatasetPaths, SHARED_CACHE_BASENAME, candidate_path, choose_existing, detect_prefix,
     discover, exists_plain_or_gz, gz_path, open_maybe_gz_existing, resolve_shared_cache_filename,
 };
-pub use model::{CanonicalData, InputMetadata, MatrixStats, SoaCscMatrix};
+pub use model::{
+    CanonicalData, CountMismatch, IngestReport, InputMetadata, MatrixStats, SoaCscMatrix,
+};

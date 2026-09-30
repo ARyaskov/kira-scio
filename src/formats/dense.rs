@@ -9,10 +9,9 @@ use std::path::Path;
 
 use flate2::read::GzDecoder;
 use rustc_hash::FxHashSet;
-use tracing::warn;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{InputMetadata, MatrixStats, SoaCscMatrix};
+use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
 use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
@@ -25,6 +24,7 @@ pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
         gene_symbols: parsed.gene_symbols,
         barcodes: parsed.barcodes,
         stats: parsed.stats,
+        report: parsed.report,
     })
 }
 
@@ -46,6 +46,7 @@ pub(crate) fn parse_dense_full(
         gene_symbols: parsed.gene_symbols,
         barcodes: parsed.barcodes,
         stats: parsed.stats,
+        report: parsed.report,
     };
     Ok((metadata, parsed.matrix))
 }
@@ -57,6 +58,7 @@ struct ParsedDense {
     barcodes: Vec<String>,
     matrix: SoaCscMatrix,
     stats: MatrixStats,
+    report: IngestReport,
 }
 
 fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
@@ -70,8 +72,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
     let mut seen_barcodes = FxHashSet::default();
     let mut duplicate_genes: Vec<String> = Vec::new();
     let mut duplicate_barcodes: Vec<String> = Vec::new();
-
-    let mut saw_nonfinite = false;
+    let mut report = IngestReport::default();
 
     let reader = open_maybe_gz(path)?;
     let mut header_parsed = false;
@@ -81,7 +82,9 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
     for (line_no, line) in reader.lines().enumerate() {
         let line = line?;
         let line = if line_no == 0 {
-            strip_bom(&line)
+            let stripped = strip_bom(&line);
+            report.bom_stripped |= stripped.len() != line.len();
+            stripped
         } else {
             &line
         };
@@ -175,7 +178,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
                 let value = parse_value(token.trim(), path, line_no + 1, g_idx + 2, strict)?;
                 match value {
                     ValueOutcome::Zero => {}
-                    ValueOutcome::NonFinite => saw_nonfinite = true,
+                    ValueOutcome::NonFinite => report.dropped_non_finite += 1,
                     ValueOutcome::Finite(v) => triplets.push((col_idx, g_idx as u32, v)),
                 }
             }
@@ -213,7 +216,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
                 let value = parse_value(token.trim(), path, line_no + 1, c_idx + 2, strict)?;
                 match value {
                     ValueOutcome::Zero => {}
-                    ValueOutcome::NonFinite => saw_nonfinite = true,
+                    ValueOutcome::NonFinite => report.dropped_non_finite += 1,
                     ValueOutcome::Finite(v) => triplets.push((c_idx as u32, row_idx_value, v)),
                 }
             }
@@ -228,21 +231,18 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
         .with_path(path.to_path_buf()));
     }
 
-    if !duplicate_genes.is_empty() {
-        warn!(path = %path.display(), duplicates = ?duplicate_genes, "duplicate gene symbols");
-    }
-    if !duplicate_barcodes.is_empty() {
-        warn!(path = %path.display(), duplicates = ?duplicate_barcodes, "duplicate barcodes");
-    }
-    if saw_nonfinite && !strict {
-        warn!(path = %path.display(), "non-finite values treated as zero");
-    }
+    report.duplicate_gene_ids = duplicate_genes;
+    report.duplicate_barcodes = duplicate_barcodes;
 
     // Coordinates are unique by construction (each gene/cell label maps to
     // its own index even when labels repeat), so no merging happens here.
-    let (matrix, _merged) = SoaCscMatrix::from_triplets(barcodes.len(), gene_ids.len(), triplets);
+    SoaCscMatrix::check_dims(barcodes.len(), gene_ids.len())
+        .map_err(|e| e.with_path(path.to_path_buf()))?;
+    let (matrix, merged) = SoaCscMatrix::from_triplets(barcodes.len(), gene_ids.len(), triplets);
+    report.merged_duplicates = merged;
     matrix.validate()?;
     let stats = MatrixStats::from_matrix(&matrix);
+    crate::formats::mtx10x::log_report(path, &report);
 
     Ok(ParsedDense {
         gene_ids,
@@ -250,6 +250,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
         barcodes,
         matrix,
         stats,
+        report,
     })
 }
 

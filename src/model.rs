@@ -75,6 +75,18 @@ impl SoaCscMatrix {
         Ok(())
     }
 
+    /// Rejects shapes whose indices cannot be represented by the `u32`
+    /// triplet/row-index layout.
+    pub fn check_dims(n_cells: usize, n_genes: usize) -> ScioResult<()> {
+        if n_cells > u32::MAX as usize || n_genes > u32::MAX as usize {
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
+                format!("shape {n_cells}x{n_genes} exceeds the u32 index range"),
+            ));
+        }
+        Ok(())
+    }
+
     /// Builds a canonical CSC matrix from `(col, row, value)` triplets.
     ///
     /// Duplicate coordinates are summed (Matrix Market / SciPy convention) and
@@ -172,6 +184,77 @@ impl MatrixStats {
     }
 }
 
+/// A declared-versus-observed count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountMismatch {
+    pub expected: usize,
+    pub found: usize,
+}
+
+/// Everything a reader had to drop, merge or synthesize to produce the
+/// canonical matrix.
+///
+/// The rules are the same for every format:
+///
+/// * **Lossy repairs** (`dropped_*`, `entry_count_mismatch`, `relabeled_*`)
+///   are errors in strict mode and are only recorded in lenient mode.
+/// * **Lossless normalizations** (`merged_duplicates`, `explicit_zeros`,
+///   `duplicate_*` labels, `bom_stripped`) are recorded in both modes.
+/// * Structural corruption (inconsistent index arrays, unreadable headers)
+///   is always an error.
+///
+/// In strict mode every `dropped_*` counter and every mismatch is therefore
+/// zero / `None`; the report is still worth persisting alongside the data
+/// for provenance.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct IngestReport {
+    /// Entries whose coordinate lies outside the declared shape.
+    pub dropped_out_of_range: usize,
+    /// Entries whose value is NaN or infinite.
+    pub dropped_non_finite: usize,
+    /// Explicitly stored zeros in a sparse input; never stored in the
+    /// canonical matrix. Always 0 for dense inputs.
+    pub explicit_zeros: usize,
+    /// Duplicate coordinates that were summed into one entry.
+    pub merged_duplicates: usize,
+    /// Gene ids seen more than once; each occurrence keeps its own row.
+    pub duplicate_gene_ids: Vec<String>,
+    /// Barcodes seen more than once; each occurrence keeps its own column.
+    pub duplicate_barcodes: Vec<String>,
+    /// Gene label vector length disagreed with the matrix and was resized
+    /// with synthesized labels.
+    pub relabeled_genes: Option<CountMismatch>,
+    /// Barcode vector length disagreed with the matrix and was resized with
+    /// synthesized labels.
+    pub relabeled_barcodes: Option<CountMismatch>,
+    /// Matrix Market header entry count disagreed with the entries found.
+    pub entry_count_mismatch: Option<CountMismatch>,
+    /// A UTF-8 byte order mark was removed from at least one text input.
+    pub bom_stripped: bool,
+}
+
+impl IngestReport {
+    /// True when nothing was dropped or synthesized; label duplicates,
+    /// merged coordinates, explicit zeros and a BOM do not count as loss.
+    pub fn is_lossless(&self) -> bool {
+        self.dropped_out_of_range == 0
+            && self.dropped_non_finite == 0
+            && self.relabeled_genes.is_none()
+            && self.relabeled_barcodes.is_none()
+            && self.entry_count_mismatch.is_none()
+    }
+
+    /// True when the report has nothing to say at all.
+    pub fn is_clean(&self) -> bool {
+        self.is_lossless()
+            && self.explicit_zeros == 0
+            && self.merged_duplicates == 0
+            && self.duplicate_gene_ids.is_empty()
+            && self.duplicate_barcodes.is_empty()
+            && !self.bom_stripped
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InputMetadata {
     pub format: String,
@@ -181,6 +264,8 @@ pub struct InputMetadata {
     pub gene_symbols: Vec<String>,
     pub barcodes: Vec<String>,
     pub stats: MatrixStats,
+    /// What the reader tolerated or repaired; see [`IngestReport`].
+    pub report: IngestReport,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +348,28 @@ mod tests {
             ..base.clone()
         };
         assert!(bad_start.validate().is_err());
+    }
+
+    #[test]
+    fn report_classification() {
+        let clean = IngestReport::default();
+        assert!(clean.is_clean() && clean.is_lossless());
+        let merged = IngestReport {
+            merged_duplicates: 2,
+            ..Default::default()
+        };
+        assert!(merged.is_lossless() && !merged.is_clean());
+        let lossy = IngestReport {
+            dropped_non_finite: 1,
+            ..Default::default()
+        };
+        assert!(!lossy.is_lossless());
+    }
+
+    #[test]
+    fn check_dims_rejects_u32_overflow() {
+        SoaCscMatrix::check_dims(10, 10).unwrap();
+        assert!(SoaCscMatrix::check_dims(u32::MAX as usize + 1, 1).is_err());
     }
 
     #[test]
