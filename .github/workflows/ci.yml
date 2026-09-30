@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install HDF5
+        run: sudo apt-get update && sudo apt-get install -y libhdf5-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-features --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        features: [default, all]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install HDF5 (Linux)
+        if: matrix.features == 'all' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libhdf5-dev
+      - name: Install HDF5 (macOS)
+        if: matrix.features == 'all' && runner.os == 'macOS'
+        run: |
+          brew install hdf5
+          echo "HDF5_DIR=$(brew --prefix hdf5)" >> "$GITHUB_ENV"
+      - name: Test (default features)
+        if: matrix.features == 'default'
+        run: cargo test
+      - name: Test (all features)
+        if: matrix.features == 'all'
+        run: cargo test --all-features
+
+  fixtures:
+    name: fixtures are reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install anndata h5py numpy scipy
+      - name: Regenerate and compare structure
+        run: |
+          python tests/fixtures/h5ad/generate.py /tmp/h5ad
+          python tests/fixtures/tenx_h5/generate.py /tmp/tenx
+          python - <<'PY'
+          import h5py, pathlib, sys
+          def layout(p):
+              out = []
+              with h5py.File(p) as f:
+                  def visit(name, obj):
+                      kind = "D" if isinstance(obj, h5py.Dataset) else "G"
+                      extra = f"{obj.dtype}{obj.shape}" if kind == "D" else ""
+                      out.append((name, kind, extra, tuple(sorted(obj.attrs.keys()))))
+                  f.visititems(visit)
+              return sorted(out)
+          bad = 0
+          for committed, fresh in [("tests/fixtures/h5ad", "/tmp/h5ad"), ("tests/fixtures/tenx_h5", "/tmp/tenx")]:
+              for p in sorted(pathlib.Path(committed).glob("*.h5*")):
+                  q = pathlib.Path(fresh) / p.name
+                  if not q.exists() or layout(p) != layout(q):
+                      print("fixture drift:", p); bad += 1
+          sys.exit(1 if bad else 0)
+          PY
