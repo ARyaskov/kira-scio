@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kira_scio::{ErrorCode, Reader};
+use kira_scio::{ErrorCode, Reader, ReaderOptions};
 
 fn temp_dir(label: &str) -> PathBuf {
     let ts = SystemTime::now()
@@ -96,4 +96,68 @@ fn zero_based_index_is_rejected() {
     );
     let err = Reader::new(&d).read_all().unwrap_err();
     assert_eq!(err.code, ErrorCode::ValidationError);
+}
+
+#[test]
+fn entry_count_mismatch_is_an_error_in_strict_mode() {
+    // Header promises 4 entries, file is truncated after 2.
+    let d = dataset(
+        "truncated",
+        "%%MatrixMarket matrix coordinate integer general\n2 2 4\n1 1 1\n2 2 2\n",
+    );
+    let err = Reader::new(&d).read_all().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ParseError);
+    assert!(err.message.contains("declares 4"), "{}", err.message);
+    assert!(err.message.contains("2 were found"), "{}", err.message);
+}
+
+#[test]
+fn entry_count_mismatch_is_tolerated_in_lenient_mode() {
+    let d = dataset(
+        "truncated_lenient",
+        "%%MatrixMarket matrix coordinate integer general\n2 2 4\n1 1 1\n2 2 2\n",
+    );
+    let data = Reader::with_options(
+        &d,
+        ReaderOptions {
+            strict: false,
+            force_format: None,
+        },
+    )
+    .read_all()
+    .unwrap();
+    assert_eq!(data.metadata.stats.nnz, 2);
+}
+
+#[test]
+fn entry_count_includes_zero_and_duplicate_entries() {
+    // 4 listed entries: one explicit zero, one duplicate. Count matches the
+    // header even though only 2 stored values remain.
+    let d = dataset(
+        "count_semantics",
+        "%%MatrixMarket matrix coordinate integer general\n2 2 4\n1 1 1\n1 1 2\n2 1 0\n2 2 5\n",
+    );
+    let data = Reader::new(&d).read_all().unwrap();
+    assert_eq!(data.metadata.stats.nnz, 2);
+    assert_eq!(data.matrix.values, vec![3.0, 5.0]);
+}
+
+#[test]
+fn header_without_entry_count_is_rejected_in_strict_mode() {
+    let d = dataset(
+        "no_nnz",
+        "%%MatrixMarket matrix coordinate integer general\n2 2\n1 1 1\n",
+    );
+    let err = Reader::new(&d).read_all().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ParseError);
+    let data = Reader::with_options(
+        &d,
+        ReaderOptions {
+            strict: false,
+            force_format: None,
+        },
+    )
+    .read_all()
+    .unwrap();
+    assert_eq!(data.metadata.stats.nnz, 1);
 }

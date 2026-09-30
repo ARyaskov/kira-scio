@@ -185,6 +185,8 @@ fn parse_matrix_market(
 ) -> ScioResult<ParsedMtx> {
     let mut n_rows = None::<usize>;
     let mut n_cols = None::<usize>;
+    let mut nnz_hint = None::<usize>;
+    let mut entries_seen = 0usize;
     let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
 
     let mut saw_nonfinite = false;
@@ -214,12 +216,26 @@ fn parse_matrix_market(
                     ScioError::new(ErrorCode::ParseError, "invalid n_cols")
                         .with_path(source.to_path_buf())
                 })?;
-            let _ = header.next(); // nnz hint, ignored
+            // Third header field: number of entries that follow. Used to
+            // detect truncated files and to pre-size the triplet buffer.
+            match header.next() {
+                Some(tok) => {
+                    let hint = tok.parse::<usize>().map_err(|_| {
+                        ScioError::new(ErrorCode::ParseError, "invalid nnz in MTX header")
+                            .with_path(source.to_path_buf())
+                    })?;
+                    nnz_hint = Some(hint);
+                    triplets.reserve(hint.min(MAX_RESERVED_ENTRIES));
+                }
+                None if strict => return Err(header_err(source, line_no)),
+                None => {}
+            }
             n_rows = Some(r);
             n_cols = Some(c);
             continue;
         }
 
+        entries_seen += 1;
         let mut parts = t.split_whitespace();
         let row_1 = parts
             .next()
@@ -300,6 +316,27 @@ fn parse_matrix_market(
         );
     }
 
+    if let Some(expected) = nnz_hint
+        && expected != entries_seen
+    {
+        if strict {
+            return Err(ScioError::new(
+                ErrorCode::ParseError,
+                format!(
+                    "MTX header declares {expected} entries but {entries_seen} were found \
+                     (truncated or corrupt file; use strict=false to accept)"
+                ),
+            )
+            .with_path(source.to_path_buf()));
+        }
+        warn!(
+            path = %source.display(),
+            expected,
+            found = entries_seen,
+            "MTX entry count does not match header (strict=false)"
+        );
+    }
+
     let rows = n_rows.ok_or_else(|| {
         ScioError::new(ErrorCode::ParseError, "missing MTX header").with_path(source.to_path_buf())
     })?;
@@ -313,6 +350,10 @@ fn parse_matrix_market(
         triplets,
     })
 }
+
+/// Upper bound on entries pre-allocated from the header hint so a bogus
+/// header cannot trigger a multi-gigabyte allocation up front.
+const MAX_RESERVED_ENTRIES: usize = 1 << 26;
 
 fn header_err(source: &Path, line_no: usize) -> ScioError {
     ScioError::new(
