@@ -16,7 +16,8 @@
   - sparse CSC (SoA layout), canonical form: rows strictly increasing within a column, duplicate coordinates summed, no explicit zeros
   - deterministic ordering
 - Unified API:
-  - `read_metadata()`
+  - `read_shape()` — `(n_cells, n_genes)` from headers and label files, no entries parsed
+  - `read_metadata()` — labels, statistics, marginals, report, provenance (cached after a full parse)
   - `read_matrix()`
   - `read_all()`
 - Strict error taxonomy with stable error codes.
@@ -28,6 +29,7 @@
 use kira_scio::Reader;
 
 let reader = Reader::new("/path/to/input");
+let (n_cells, n_genes) = reader.read_shape()?;
 let metadata = reader.read_metadata()?;
 let matrix = reader.read_matrix()?;
 let all = reader.read_all()?;
@@ -54,11 +56,21 @@ let reader = Reader::with_options("/path/to/input", ReaderOptions {
     feature_types: FeatureTypeFilter::GeneExpression,
     // For h5ad: read raw counts from `raw/X` instead of a normalized `X`.
     h5ad_source: H5adSource::RawX,
+    // Keep Ensembl ids exactly as written (default strips `.N` versions).
+    strip_ensembl_versions: false,
+    // scanpy-style `-1`, `-2` suffixes for repeated gene labels.
+    make_gene_labels_unique: true,
 });
 ```
 
 - `feature_types`: `All` (default), `GeneExpression`, or `Only([...])`. Applies when the source declares feature types (10x v3 `features.tsv`, 10x `.h5`, anndata `var/feature_types`); the excluded count is recorded in `report.excluded_features`.
 - `h5ad_source`: `X` (default), `RawX` (labels from `raw/var`), or `Layer(name)`. A missing source is a `MissingFile` error.
+- `strip_ensembl_versions` (default `true`): strips the `.N` suffix from Ensembl stable ids of any species and feature type (`ENSG`, `ENSMUSG`, `ENSDARG`, `ENST`, …).
+- `make_gene_labels_unique` (default `false`): renames repeated gene ids and symbols `X`, `X-1`, `X-2`, … The original duplicates stay listed in `report.duplicate_gene_ids`; duplicates are detected the same way for every format.
+
+## Provenance
+
+`InputMetadata::provenance` records the resolved source file, a dialect tag (`mtx-v3`, `mtx-v2`, `bd-molspercell-dbec`, `dense-cell-major`, `anndata-0.1.0`, `cellranger-h5-v3`, …), the MEX dataset prefix, the AnnData matrix source, and `MatrixKind::{Raw, Filtered, Unknown}` inferred from Cell Ranger / BD naming (`raw_feature_bc_matrix`, `filtered_…`, `_Unfiltered_`). Empty-droplet and ambient-RNA methods need `Raw`.
 
 ## Statistics
 
@@ -104,9 +116,18 @@ Supported layouts:
 
 Test fixtures live in `tests/fixtures/h5ad` and are regenerated with `python3 tests/fixtures/h5ad/generate.py tests/fixtures/h5ad` (requires `anndata`, `h5py`, `scipy`).
 
+## Matrix Market
+
+The banner is validated: `matrix coordinate {integer|real|pattern} general` is accepted (`pattern` entries count as 1); `array`, `complex` and non-`general` symmetry are `UnsupportedFormat`. A missing banner is an error in strict mode and means `real general` in lenient mode. Entries are parsed on bytes with a reused buffer; the canonical sort is skipped when entries already arrive column-major, as Cell Ranger and SciPy write them.
+
+A directory must hold a single prefixed dataset; to read one of several (`A_matrix.mtx`, `B_matrix.mtx`), pass the matrix file itself.
+
+## Format detection
+
+Extension first (`.mtx`, `.h5ad`, `.h5`, `.tsv`, `.csv`, `.gz` variants, BD `*_MolsPerCell.csv` and `raw_counts.tsv` names), then content sniffing for other files: a Matrix Market header, a `#`-commented table or a `Cell_Index` first column identify MTX and BD Rhapsody; everything else is a dense table. The value type is not a signal: fractional values only mean the table was normalized upstream, which `MatrixStats::is_integer` reports.
+
 ## Notes
 
 - Parsing is streaming-oriented for text formats (line-by-line).
 - `.gz` variants are supported where applicable.
 - MTX prefix variants are supported for both underscore and dot naming styles.
-- Ensembl gene id versions (`ENSG…​.5`) are stripped for human and mouse ids.
