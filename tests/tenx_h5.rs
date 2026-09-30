@@ -60,6 +60,7 @@ fn cell_ranger_v3_layout_with_feature_types() {
             force_format: None,
             feature_types: FeatureTypeFilter::GeneExpression,
             h5ad_source: Default::default(),
+            ..Default::default()
         },
     )
     .read_all()

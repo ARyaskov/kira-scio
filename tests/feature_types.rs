@@ -46,6 +46,7 @@ fn with_filter(filter: FeatureTypeFilter) -> ReaderOptions {
         force_format: None,
         feature_types: filter,
         h5ad_source: Default::default(),
+        ..Default::default()
     }
 }
 

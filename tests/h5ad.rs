@@ -18,6 +18,7 @@ fn lenient() -> ReaderOptions {
         force_format: None,
         feature_types: Default::default(),
         h5ad_source: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -127,6 +128,7 @@ fn structural_corruption_is_an_error_in_both_modes() {
                 force_format: None,
                 feature_types: Default::default(),
                 h5ad_source: Default::default(),
+                ..Default::default()
             },
         )
         .read_all()
@@ -178,6 +180,7 @@ fn feature_types_column_is_read_and_filterable() {
             force_format: None,
             feature_types: FeatureTypeFilter::GeneExpression,
             h5ad_source: Default::default(),
+            ..Default::default()
         },
     )
     .read_all()
@@ -198,6 +201,7 @@ fn matrix_source_selects_x_raw_x_or_a_layer() {
         force_format: None,
         feature_types: Default::default(),
         h5ad_source: src,
+        ..Default::default()
     };
 
     // /X is log-normalized in this fixture.

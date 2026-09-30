@@ -52,26 +52,24 @@ fn synth_padded(prefix: &'static str, value: usize) -> String {
 /// needed.
 pub fn normalize_gene_symbol(gene_id: &str, gene_symbol: Option<&str>, idx: usize) -> String {
     let candidate = gene_symbol.unwrap_or(gene_id).trim();
-    let cleaned = if candidate.is_empty() {
+    if candidate.is_empty() {
         synth_gene(idx)
     } else {
         nfc(candidate)
-    };
-    strip_ensembl_version(&cleaned)
+    }
 }
 
 /// Prefers `gene_id` over `fallback_symbol`, then synthesises a placeholder.
 pub fn normalize_gene_id(gene_id: &str, fallback_symbol: Option<&str>, idx: usize) -> String {
     let id_trimmed = gene_id.trim();
-    let value = if !id_trimmed.is_empty() {
+    if !id_trimmed.is_empty() {
         nfc(id_trimmed)
     } else {
         match fallback_symbol.map(str::trim).filter(|s| !s.is_empty()) {
             Some(s) => nfc(s),
             None => synth_gene(idx),
         }
-    };
-    strip_ensembl_version(&value)
+    }
 }
 
 fn nfc(value: &str) -> String {
@@ -82,16 +80,62 @@ fn nfc_trim(value: &str) -> String {
     value.trim().nfc().collect()
 }
 
-fn strip_ensembl_version(value: &str) -> String {
-    if (value.starts_with("ENSG") || value.starts_with("ENSMUSG"))
-        && value
-            .rsplit_once('.')
-            .map(|(_, s)| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
-            .unwrap_or(false)
-    {
-        return value.split('.').next().unwrap_or(value).to_string();
+/// Strips the `.N` version suffix from an Ensembl stable id of any species
+/// and feature type (`ENSG…`, `ENSMUSG…`, `ENSDARG…`, `ENST…`, `ENSP…`, …).
+/// Ensembl stable ids are `ENS`, an optional species code of up to five
+/// upper-case letters, a feature-type code, and at least six digits;
+/// anything else is returned unchanged. Applied by the `Reader` unless
+/// `ReaderOptions::strip_ensembl_versions` is off.
+pub fn strip_ensembl_version(value: &str) -> &str {
+    let Some((stem, version)) = value.rsplit_once('.') else {
+        return value;
+    };
+    if version.is_empty() || !version.bytes().all(|b| b.is_ascii_digit()) {
+        return value;
     }
-    value.to_string()
+    let Some(rest) = stem.strip_prefix("ENS") else {
+        return value;
+    };
+    let letters = rest.bytes().take_while(|b| b.is_ascii_uppercase()).count();
+    let digits = rest[letters..].len();
+    let all_digits = rest[letters..].bytes().all(|b| b.is_ascii_digit());
+    // Species code (0-5 letters) plus at least one feature-type letter.
+    if (1..=6).contains(&letters) && digits >= 6 && all_digits {
+        stem
+    } else {
+        value
+    }
+}
+
+/// Makes labels unique in place the way scanpy's `var_names_make_unique`
+/// does: the second occurrence of `X` becomes `X-1`, the third `X-2`, and so
+/// on. Returns the number of labels renamed.
+pub fn make_labels_unique(labels: &mut [String]) -> usize {
+    use rustc_hash::FxHashMap;
+    let mut seen: FxHashMap<String, usize> = FxHashMap::default();
+    for l in labels.iter() {
+        *seen.entry(l.clone()).or_insert(0) += 1;
+    }
+    let mut counters: FxHashMap<String, usize> = FxHashMap::default();
+    let mut renamed = 0;
+    for l in labels.iter_mut() {
+        if seen.get(l).copied().unwrap_or(0) <= 1 {
+            continue;
+        }
+        let n = counters.entry(l.clone()).or_insert(0);
+        if *n > 0 {
+            let mut candidate = format!("{l}-{n}");
+            // Avoid colliding with a label that already exists in the input.
+            while seen.contains_key(&candidate) {
+                *n += 1;
+                candidate = format!("{l}-{n}");
+            }
+            *l = candidate;
+            renamed += 1;
+        }
+        *n += 1;
+    }
+    renamed
 }
 
 #[cfg(test)]
@@ -134,13 +178,43 @@ mod tests {
     }
 
     #[test]
-    fn ensembl_version_is_stripped() {
-        assert_eq!(normalize_gene_id("ENSG00000001.5", None, 0), "ENSG00000001");
+    fn ensembl_version_is_stripped_for_any_species_and_feature_type() {
+        for (input, expected) in [
+            ("ENSG00000139618.15", "ENSG00000139618"),
+            ("ENSMUSG00000000001.2", "ENSMUSG00000000001"),
+            ("ENSDARG00000000001.3", "ENSDARG00000000001"),
+            ("ENSRNOG00000000002.1", "ENSRNOG00000000002"),
+            ("ENSSSCG00000000003.7", "ENSSSCG00000000003"),
+            ("ENST00000380152.8", "ENST00000380152"),
+            ("ENSP00000369497.3", "ENSP00000369497"),
+            // Unversioned or non-Ensembl labels pass through.
+            ("ENSG00000139618", "ENSG00000139618"),
+            ("BRCA2", "BRCA2"),
+            ("MT-CO1", "MT-CO1"),
+            ("FBgn0000001.1", "FBgn0000001.1"),
+            ("ENS.5", "ENS.5"),
+            ("ENSG1.5", "ENSG1.5"),
+            ("ENSG00000139618.x", "ENSG00000139618.x"),
+        ] {
+            assert_eq!(strip_ensembl_version(input), expected, "{input}");
+        }
+        // Normalization itself no longer strips; the Reader applies it.
         assert_eq!(
-            normalize_gene_id("ENSMUSG00000000001.2", None, 0),
-            "ENSMUSG00000000001"
+            normalize_gene_id("ENSG00000001.5", None, 0),
+            "ENSG00000001.5"
         );
-        // Non-versioned ids should pass through.
-        assert_eq!(normalize_gene_id("ENSG00000001", None, 0), "ENSG00000001");
+    }
+
+    #[test]
+    fn make_labels_unique_appends_running_suffixes() {
+        let mut v: Vec<String> = ["A", "B", "A", "A", "B-1", "B"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let renamed = make_labels_unique(&mut v);
+        assert_eq!(renamed, 3);
+        assert_eq!(v, vec!["A", "B", "A-1", "A-2", "B-1", "B-2"]);
+        let mut unique: Vec<String> = vec!["x".into(), "y".into()];
+        assert_eq!(make_labels_unique(&mut unique), 0);
     }
 }

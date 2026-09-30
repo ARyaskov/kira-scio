@@ -8,7 +8,6 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use flate2::read::GzDecoder;
-use rustc_hash::FxHashSet;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
 use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
@@ -72,10 +71,6 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
     // (col, row, value) triplets, sorted into CSC at the end.
     let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
 
-    let mut seen_genes = FxHashSet::default();
-    let mut seen_barcodes = FxHashSet::default();
-    let mut duplicate_genes: Vec<String> = Vec::new();
-    let mut duplicate_barcodes: Vec<String> = Vec::new();
     let mut report = IngestReport::default();
 
     let reader = open_maybe_gz(path)?;
@@ -108,9 +103,6 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
                 for (i, s) in header.iter().enumerate().skip(1) {
                     let id = normalize_gene_id(s, None, gene_ids.len());
                     let sym = normalize_gene_symbol(s, None, gene_symbols.len());
-                    if !seen_genes.insert(id.clone()) {
-                        duplicate_genes.push(id.clone());
-                    }
                     gene_ids.push(id);
                     gene_symbols.push(sym);
                     let _ = i;
@@ -141,11 +133,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
                 }
                 barcodes.reserve(raw.len());
                 for (i, s) in raw.drain(..).enumerate() {
-                    let b = normalize_barcode(&s, i);
-                    if !seen_barcodes.insert(b.clone()) {
-                        duplicate_barcodes.push(b.clone());
-                    }
-                    barcodes.push(b);
+                    barcodes.push(normalize_barcode(&s, i));
                 }
             }
             header_parsed = true;
@@ -171,9 +159,6 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
             let mut tokens = trimmed.split(delim);
             let barcode_raw = tokens.next().unwrap_or("");
             let barcode = normalize_barcode(barcode_raw.trim(), barcodes.len());
-            if !seen_barcodes.insert(barcode.clone()) {
-                duplicate_barcodes.push(barcode.clone());
-            }
             let col_idx = barcodes.len() as u32;
             barcodes.push(barcode);
 
@@ -208,9 +193,6 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
             let gene_raw = tokens.next().unwrap_or("");
             let gene_id = normalize_gene_id(gene_raw.trim(), None, gene_ids.len());
             let gene_symbol = normalize_gene_symbol(gene_raw.trim(), None, gene_symbols.len());
-            if !seen_genes.insert(gene_id.clone()) {
-                duplicate_genes.push(gene_id.clone());
-            }
             let row_idx_value = gene_ids.len() as u32;
             gene_ids.push(gene_id);
             gene_symbols.push(gene_symbol);
@@ -234,9 +216,6 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
         )
         .with_path(path.to_path_buf()));
     }
-
-    report.duplicate_gene_ids = duplicate_genes;
-    report.duplicate_barcodes = duplicate_barcodes;
 
     // Coordinates are unique by construction (each gene/cell label maps to
     // its own index even when labels repeat), so no merging happens here.

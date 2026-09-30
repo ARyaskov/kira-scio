@@ -166,14 +166,8 @@ pub(crate) fn log_report(source: &Path, report: &IngestReport) {
     if let Some(m) = report.relabeled_barcodes {
         warn!(%path, expected = m.expected, found = m.found, "barcode count resized to matrix");
     }
-    if !report.duplicate_gene_ids.is_empty() {
-        warn!(%path, count = report.duplicate_gene_ids.len(), "duplicate gene ids kept as separate rows");
-    }
     if report.transposed {
         warn!(%path, "matrix was stored cells x genes; transposed to genes x cells");
-    }
-    if !report.duplicate_barcodes.is_empty() {
-        warn!(%path, count = report.duplicate_barcodes.len(), "duplicate barcodes kept as separate columns");
     }
 }
 

@@ -124,6 +124,7 @@ fn entry_count_mismatch_is_tolerated_in_lenient_mode() {
             force_format: None,
             feature_types: Default::default(),
             h5ad_source: Default::default(),
+            ..Default::default()
         },
     )
     .read_all()
@@ -159,6 +160,7 @@ fn header_without_entry_count_is_rejected_in_strict_mode() {
             force_format: None,
             feature_types: Default::default(),
             h5ad_source: Default::default(),
+            ..Default::default()
         },
     )
     .read_all()

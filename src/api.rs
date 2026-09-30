@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use crate::detect::{DetectedFormat, detect_input_format};
 use crate::error::{ErrorCode, ScioError, ScioResult};
 use crate::model::{CanonicalData, InputMetadata, Marginals, MatrixStats, SoaCscMatrix};
+use crate::normalize::{make_labels_unique, strip_ensembl_version};
 
 /// Which feature modalities to keep when the source declares them.
 ///
@@ -50,13 +51,33 @@ pub enum H5adSource {
     Layer(String),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ReaderOptions {
     pub force_format: Option<DetectedFormat>,
     pub strict: bool,
     pub feature_types: FeatureTypeFilter,
     /// Only consulted for H5AD inputs.
     pub h5ad_source: H5adSource,
+    /// Strip the `.N` version suffix from Ensembl stable ids in gene ids and
+    /// symbols (default `true`). Turn off to keep ids exactly as written.
+    pub strip_ensembl_versions: bool,
+    /// Rename repeated gene ids and symbols with `-1`, `-2`, … suffixes
+    /// (scanpy's `var_names_make_unique`; default `false`). The original
+    /// duplicates are still listed in `IngestReport::duplicate_gene_ids`.
+    pub make_gene_labels_unique: bool,
+}
+
+impl Default for ReaderOptions {
+    fn default() -> Self {
+        Self {
+            force_format: None,
+            strict: false,
+            feature_types: FeatureTypeFilter::All,
+            h5ad_source: H5adSource::X,
+            strip_ensembl_versions: true,
+            make_gene_labels_unique: false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -157,8 +178,47 @@ impl Reader {
             .with_path(self.input.clone()));
         }
         self.apply_feature_filter(&mut metadata, &mut matrix)?;
+        self.finalize_labels(&mut metadata);
         metadata.marginals = Marginals::from_matrix(&matrix);
         Ok((metadata, matrix))
+    }
+
+    /// Ensembl version stripping, duplicate-label detection (uniform across
+    /// formats) and optional de-duplication of gene labels.
+    fn finalize_labels(&self, metadata: &mut InputMetadata) {
+        if self.options.strip_ensembl_versions {
+            for label in metadata
+                .gene_ids
+                .iter_mut()
+                .chain(metadata.gene_symbols.iter_mut())
+            {
+                let stripped = strip_ensembl_version(label);
+                if stripped.len() != label.len() {
+                    *label = stripped.to_string();
+                }
+            }
+        }
+        metadata.report.duplicate_gene_ids = duplicates(&metadata.gene_ids);
+        metadata.report.duplicate_barcodes = duplicates(&metadata.barcodes);
+        if self.options.make_gene_labels_unique {
+            make_labels_unique(&mut metadata.gene_ids);
+            make_labels_unique(&mut metadata.gene_symbols);
+        }
+        if !metadata.report.duplicate_gene_ids.is_empty() {
+            tracing::warn!(
+                path = %self.input.display(),
+                count = metadata.report.duplicate_gene_ids.len(),
+                renamed = self.options.make_gene_labels_unique,
+                "duplicate gene ids"
+            );
+        }
+        if !metadata.report.duplicate_barcodes.is_empty() {
+            tracing::warn!(
+                path = %self.input.display(),
+                count = metadata.report.duplicate_barcodes.len(),
+                "duplicate barcodes kept as separate columns"
+            );
+        }
     }
 
     fn apply_feature_filter(
@@ -198,4 +258,16 @@ impl Reader {
         metadata.report.excluded_features = excluded;
         Ok(())
     }
+}
+
+/// Labels that occur more than once, one entry per repeated occurrence, in
+/// input order.
+fn duplicates(labels: &[String]) -> Vec<String> {
+    use rustc_hash::FxHashSet;
+    let mut seen: FxHashSet<&str> = FxHashSet::default();
+    labels
+        .iter()
+        .filter(|l| !seen.insert(l.as_str()))
+        .cloned()
+        .collect()
 }
