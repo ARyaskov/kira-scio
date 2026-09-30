@@ -35,17 +35,16 @@ rustc-hash = "2"
 tracing = "0.1"
 itoa = "1"
 
+# `hdf5-metno` is the maintained fork of the `hdf5` crate; it supports
+# HDF5 1.8 through 2.x (the original 0.8 bindings reject HDF5 >= 2.0).
 [dependencies.hdf5]
-version = "0.8"
-optional = true
-
-[dependencies.ndarray]
+package = "hdf5-metno"
 version = "0.15"
 optional = true
 
 [features]
 default = []
-h5ad = ["dep:hdf5", "dep:ndarray"]
+h5ad = ["dep:hdf5"]
 
 [profile.release]
 opt-level = 3

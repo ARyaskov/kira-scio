@@ -354,24 +354,30 @@ fn check_and_collect(
 
 #[cfg(feature = "h5ad")]
 fn read_dense_x(dataset: &hdf5::Dataset, strict: bool, source: &Path) -> ScioResult<SoaCscMatrix> {
-    use ndarray::Ix2;
     let shape = dataset.shape();
     if shape.len() != 2 {
         return Err(ScioError::new(ErrorCode::ParseError, "dense /X must be 2D")
             .with_path(source.to_path_buf()));
     }
-    // AnnData dense layout: (cells, genes).
+    // AnnData dense layout: (cells, genes), stored row-major.
     let n_cells = shape[0];
     let n_genes = shape[1];
-    let array = dataset
-        .read::<f32, Ix2>()
+    let array: Vec<f32> = dataset
+        .read_raw()
         .map_err(|e| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
+    if array.len() != n_cells * n_genes {
+        return Err(ScioError::new(
+            ErrorCode::ParseError,
+            "dense /X element count does not match its shape",
+        )
+        .with_path(source.to_path_buf()));
+    }
 
     let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
     let mut saw_nonfinite = false;
     for cell in 0..n_cells {
         for gene in 0..n_genes {
-            let v = array[(cell, gene)];
+            let v = array[cell * n_genes + gene];
             if v == 0.0 {
                 continue;
             }
