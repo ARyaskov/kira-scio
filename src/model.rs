@@ -98,7 +98,9 @@ impl SoaCscMatrix {
         n_genes: usize,
         mut triplets: Vec<(u32, u32, f32)>,
     ) -> (Self, usize) {
-        triplets.sort_unstable_by_key(|t| (t.0, t.1));
+        // Stable: equal coordinates keep file order, so summing duplicates
+        // is deterministic bit-for-bit.
+        triplets.sort_by_key(|t| (t.0, t.1));
 
         let mut col_ptr: Vec<u64> = Vec::with_capacity(n_cells + 1);
         let mut row_idx: Vec<u32> = Vec::with_capacity(triplets.len());
