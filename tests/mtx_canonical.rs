@@ -218,3 +218,49 @@ fn correctly_oriented_matrix_is_never_transposed() {
     assert_eq!(data.matrix.col_ptr, vec![0, 0, 1]);
     assert_eq!(data.matrix.row_idx, vec![0]);
 }
+
+/// A directory may hold several prefixed datasets; naming the matrix file
+/// selects one of them, while naming the directory stays ambiguous.
+#[test]
+fn explicit_matrix_file_selects_its_prefix_in_a_multi_dataset_dir() {
+    let d = temp_dir("multi_prefix");
+    for (p, v) in [("A", "1"), ("B", "2")] {
+        write(
+            &d.join(format!("{p}_matrix.mtx")),
+            &format!("%%MatrixMarket matrix coordinate integer general\n1 1 1\n1 1 {v}\n"),
+        );
+        write(
+            &d.join(format!("{p}_features.tsv")),
+            &format!("ENSG{p}\tG{p}\n"),
+        );
+        write(&d.join(format!("{p}_barcodes.tsv")), &format!("C{p}\n"));
+    }
+    let b = Reader::new(d.join("B_matrix.mtx")).read_all().unwrap();
+    assert_eq!(b.metadata.gene_ids, vec!["ENSGB"]);
+    assert_eq!(b.metadata.barcodes, vec!["CB"]);
+    assert_eq!(b.matrix.values, vec![2.0]);
+
+    let err = Reader::new(&d).read_all().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ValidationError);
+    assert!(err.message.contains("A, B"), "{}", err.message);
+}
+
+#[test]
+fn unprefixed_matrix_file_next_to_prefixed_datasets() {
+    let d = temp_dir("mixed_prefix");
+    write(
+        &d.join("matrix.mtx"),
+        "%%MatrixMarket matrix coordinate integer general\n1 1 1\n1 1 7\n",
+    );
+    write(&d.join("features.tsv"), "ENSG0\tG0\n");
+    write(&d.join("barcodes.tsv"), "C0\n");
+    write(
+        &d.join("A_matrix.mtx"),
+        "%%MatrixMarket matrix coordinate integer general\n1 1 1\n1 1 1\n",
+    );
+    write(&d.join("A_features.tsv"), "ENSGA\tGA\n");
+    write(&d.join("A_barcodes.tsv"), "CA\n");
+    let plain = Reader::new(d.join("matrix.mtx")).read_all().unwrap();
+    assert_eq!(plain.metadata.gene_ids, vec!["ENSG0"]);
+    assert_eq!(plain.matrix.values, vec![7.0]);
+}

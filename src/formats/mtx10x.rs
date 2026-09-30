@@ -511,13 +511,23 @@ fn parse_barcodes(path: &Path, report: &mut IngestReport) -> ScioResult<Vec<Stri
     Ok(out)
 }
 
+/// Locates the MTX triplet for `path`.
+///
+/// `path` may be the dataset directory or the `matrix.mtx[.gz]` file itself.
+/// Given a file, its own name fixes the dataset prefix, so a directory that
+/// holds several prefixed datasets is not ambiguous. Given a directory, the
+/// files must agree on a single prefix.
 pub fn discover(path: &Path) -> ScioResult<MtxDatasetPaths> {
-    let input_dir = if path.is_dir() {
-        path.to_path_buf()
+    let (input_dir, explicit_prefix) = if path.is_dir() {
+        (path.to_path_buf(), None)
     } else {
-        path.parent()
+        let dir = path
+            .parent()
             .ok_or_else(|| ScioError::new(ErrorCode::InvalidInputPath, "input has no parent"))?
-            .to_path_buf()
+            .to_path_buf();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // `Some(Some(p))` prefixed, `Some(None)` unprefixed file.
+        (dir, Some(extract_prefix(file_name).map(str::to_string)))
     };
 
     // Single read_dir + in-memory lookup, instead of ≤8 stat() probes per file.
@@ -533,14 +543,21 @@ pub fn discover(path: &Path) -> ScioResult<MtxDatasetPaths> {
             prefixes.insert(p.to_string());
         }
     }
-    if prefixes.len() > 1 {
-        return Err(ScioError::new(
-            ErrorCode::ValidationError,
-            format!("multiple dataset prefixes in {}", input_dir.display()),
-        )
-        .with_path(input_dir));
-    }
-    let prefix = prefixes.into_iter().next();
+    let prefix = match explicit_prefix {
+        Some(p) => p,
+        None if prefixes.len() > 1 => {
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
+                format!(
+                    "multiple dataset prefixes in {} ({}); pass the matrix file explicitly",
+                    input_dir.display(),
+                    prefixes.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+            )
+            .with_path(input_dir));
+        }
+        None => prefixes.into_iter().next(),
+    };
 
     let lookup = |base: &str| -> Option<PathBuf> {
         let mut candidates: Vec<String> = Vec::with_capacity(6);
