@@ -1,122 +1,38 @@
 //! H5AD (AnnData) reader.
 //!
-//! Sparse `X` (CSR or CSC) or dense `X` (Dataset). `obs/var` index name
-//! falls back across `_index`, `index`, `barcode`, `cell_id`, etc. Inf/NaN
-//! in `X/data` errors under strict, otherwise warns and drops.
+//! Supported on-disk layouts:
+//!
+//! * `/X` as a sparse group (`encoding-type` = `csr_matrix` / `csc_matrix`,
+//!   or the legacy `h5sparse_format` attribute) or as a dense 2-D dataset.
+//!   Index arrays may be int32 or int64; data may be any integer or float
+//!   type (converted to `f32` by HDF5).
+//! * `obs` / `var` index resolved through the group's `_index` attribute
+//!   (anndata >= 0.7), with conventional names as fallback.
+//! * String columns stored as variable- or fixed-length string datasets,
+//!   as `nullable-string-array` groups (anndata >= 0.10) or as
+//!   `categorical` groups (`codes` + `categories`).
+//!
+//! Strict/lenient semantics follow [`crate::model::IngestReport`]: structural
+//! corruption (inconsistent `indptr`/`indices`/`data`) is always an error;
+//! out-of-range indices and non-finite values are errors in strict mode and
+//! are dropped and counted in lenient mode; explicit zeros and duplicate
+//! coordinates are normalized and counted in both modes.
 
 use std::path::Path;
 
-#[cfg(feature = "h5ad")]
-use tracing::warn;
-
-use crate::error::{ErrorCode, ScioError, ScioResult};
-#[cfg(feature = "h5ad")]
-use crate::model::MatrixStats;
+use crate::error::ScioResult;
+#[cfg(not(feature = "h5ad"))]
+use crate::error::{ErrorCode, ScioError};
 use crate::model::{InputMetadata, SoaCscMatrix};
-#[cfg(feature = "h5ad")]
-use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
-
-#[cfg(feature = "h5ad")]
-use hdf5::File;
 
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
-    #[cfg(feature = "h5ad")]
-    {
-        let (md, _) = read_all(path, strict)?;
-        return Ok(md);
-    }
-    #[cfg(not(feature = "h5ad"))]
-    {
-        let _ = path;
-        let _ = strict;
-        Err(ScioError::new(
-            ErrorCode::FeatureDisabled,
-            "h5ad feature is disabled for this build",
-        )
-        .with_path(path.to_path_buf()))
-    }
+    let (md, _) = read_all(path, strict)?;
+    Ok(md)
 }
 
 pub fn read_matrix(path: &Path, strict: bool) -> ScioResult<SoaCscMatrix> {
-    #[cfg(feature = "h5ad")]
-    {
-        let (_, mx) = read_all(path, strict)?;
-        return Ok(mx);
-    }
-    #[cfg(not(feature = "h5ad"))]
-    {
-        let _ = path;
-        let _ = strict;
-        Err(ScioError::new(
-            ErrorCode::FeatureDisabled,
-            "h5ad feature is disabled for this build",
-        )
-        .with_path(path.to_path_buf()))
-    }
-}
-
-#[cfg(feature = "h5ad")]
-pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
-    let file = File::open(path)
-        .map_err(|e| ScioError::new(ErrorCode::Io, e.to_string()).with_path(path.to_path_buf()))?;
-
-    let barcodes = read_index_strings(&file, "obs", BARCODE_FALLBACKS)?
-        .into_iter()
-        .enumerate()
-        .map(|(i, b)| normalize_barcode(&b, i))
-        .collect::<Vec<_>>();
-    let gene_raw_ids = read_index_strings(&file, "var", GENE_ID_FALLBACKS)?;
-    let gene_symbols_raw = read_optional_strings(&file, "var/gene_symbols")
-        .or_else(|_| read_optional_strings(&file, "var/feature_name"))
-        .ok();
-
-    let gene_ids = gene_raw_ids
-        .iter()
-        .enumerate()
-        .map(|(i, g)| normalize_gene_id(g, None, i))
-        .collect::<Vec<_>>();
-    let gene_symbols = gene_symbols_raw
-        .as_ref()
-        .map(|syms| {
-            syms.iter()
-                .enumerate()
-                .map(|(i, s)| normalize_gene_symbol(&gene_raw_ids[i], Some(s), i))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| {
-            gene_raw_ids
-                .iter()
-                .enumerate()
-                .map(|(i, g)| normalize_gene_symbol(g, None, i))
-                .collect()
-        });
-
-    let matrix = read_x_matrix(&file, strict, path)?;
-    if matrix.n_cells != barcodes.len() || matrix.n_genes != gene_ids.len() {
-        return Err(ScioError::new(
-            ErrorCode::DimensionMismatch,
-            format!(
-                "h5ad metadata/matrix mismatch: barcodes={} genes={} matrix={}x{}",
-                barcodes.len(),
-                gene_ids.len(),
-                matrix.n_cells,
-                matrix.n_genes
-            ),
-        )
-        .with_path(path.to_path_buf()));
-    }
-    let stats = matrix_stats(&matrix);
-    let metadata = InputMetadata {
-        format: "h5ad".to_string(),
-        n_cells: matrix.n_cells,
-        n_genes: matrix.n_genes,
-        gene_ids,
-        gene_symbols,
-        barcodes,
-        stats,
-        report: crate::model::IngestReport::default(),
-    };
-    Ok((metadata, matrix))
+    let (_, mx) = read_all(path, strict)?;
+    Ok(mx)
 }
 
 #[cfg(not(feature = "h5ad"))]
@@ -129,340 +45,572 @@ pub(crate) fn read_all(path: &Path, _strict: bool) -> ScioResult<(InputMetadata,
 }
 
 #[cfg(feature = "h5ad")]
-const BARCODE_FALLBACKS: &[&str] = &[
-    "_index", "index", "barcode", "barcodes", "cell_id", "cellid",
-];
-#[cfg(feature = "h5ad")]
-const GENE_ID_FALLBACKS: &[&str] = &["_index", "index", "gene_ids", "gene_id", "feature_id"];
+pub(crate) use imp::read_all;
 
 #[cfg(feature = "h5ad")]
-fn read_index_strings(file: &File, group: &str, candidates: &[&str]) -> ScioResult<Vec<String>> {
-    use hdf5::types::VarLenUnicode;
+mod imp {
+    use std::path::Path;
 
-    for cand in candidates {
-        let dataset_path = format!("{group}/{cand}");
-        if let Ok(ds) = file.dataset(&dataset_path) {
-            let data: Vec<VarLenUnicode> = ds
-                .read_raw()
-                .map_err(|e| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-            return Ok(data.into_iter().map(|v| v.to_string()).collect());
+    use hdf5::types::{FixedAscii, FixedUnicode, TypeDescriptor, VarLenAscii, VarLenUnicode};
+    use hdf5::{Dataset, File, Group, Location};
+    use tracing::warn;
+
+    use crate::error::{ErrorCode, ScioError, ScioResult};
+    use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
+    use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
+
+    /// Index column names tried when the group carries no `_index` attribute.
+    const BARCODE_FALLBACKS: &[&str] = &[
+        "_index", "index", "barcode", "barcodes", "cell_id", "cellid",
+    ];
+    const GENE_ID_FALLBACKS: &[&str] = &["_index", "index", "gene_ids", "gene_id", "feature_id"];
+    /// `var` columns that may hold display symbols, in preference order.
+    const GENE_SYMBOL_COLUMNS: &[&str] = &[
+        "gene_symbols",
+        "feature_name",
+        "gene_symbol",
+        "gene_name",
+        "symbol",
+    ];
+
+    fn parse_err(msg: impl Into<String>, source: &Path) -> ScioError {
+        ScioError::new(ErrorCode::ParseError, msg).with_path(source.to_path_buf())
+    }
+
+    fn hdf5_err(e: hdf5::Error, source: &Path) -> ScioError {
+        parse_err(e.to_string(), source)
+    }
+
+    pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
+        {
+            return Err(ScioError::new(
+                ErrorCode::UnsupportedFormat,
+                "gzip-compressed .h5ad cannot be opened by HDF5; decompress it first",
+            )
+            .with_path(path.to_path_buf()));
+        }
+        let file = File::open(path).map_err(|e| {
+            ScioError::new(ErrorCode::Io, e.to_string()).with_path(path.to_path_buf())
+        })?;
+        let mut report = IngestReport::default();
+
+        let barcodes = read_index(&file, "obs", BARCODE_FALLBACKS, path)?
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| normalize_barcode(&b, i))
+            .collect::<Vec<_>>();
+        let gene_raw_ids = read_index(&file, "var", GENE_ID_FALLBACKS, path)?;
+        let gene_symbols_raw = read_gene_symbols(&file, gene_raw_ids.len(), strict, path)?;
+
+        let gene_ids = gene_raw_ids
+            .iter()
+            .enumerate()
+            .map(|(i, g)| normalize_gene_id(g, None, i))
+            .collect::<Vec<_>>();
+        let gene_symbols = match gene_symbols_raw {
+            Some(syms) => syms
+                .iter()
+                .enumerate()
+                .map(|(i, s)| normalize_gene_symbol(&gene_raw_ids[i], Some(s), i))
+                .collect(),
+            None => gene_raw_ids
+                .iter()
+                .enumerate()
+                .map(|(i, g)| normalize_gene_symbol(g, None, i))
+                .collect(),
+        };
+
+        let matrix = read_x_matrix(&file, strict, path, &mut report)?;
+        if matrix.n_cells != barcodes.len() || matrix.n_genes != gene_ids.len() {
+            return Err(ScioError::new(
+                ErrorCode::DimensionMismatch,
+                format!(
+                    "h5ad metadata/matrix mismatch: barcodes={} genes={} matrix={}x{}",
+                    barcodes.len(),
+                    gene_ids.len(),
+                    matrix.n_cells,
+                    matrix.n_genes
+                ),
+            )
+            .with_path(path.to_path_buf()));
+        }
+        let stats = MatrixStats::from_matrix(&matrix);
+        crate::formats::mtx10x::log_report(path, &report);
+        let metadata = InputMetadata {
+            format: "h5ad".to_string(),
+            n_cells: matrix.n_cells,
+            n_genes: matrix.n_genes,
+            gene_ids,
+            gene_symbols,
+            barcodes,
+            stats,
+            report,
+        };
+        Ok((metadata, matrix))
+    }
+
+    // ---------------------------------------------------------------- strings
+
+    /// Reads a string dataset regardless of whether it is stored as
+    /// variable-length or fixed-length, ASCII or UTF-8.
+    fn read_string_dataset(ds: &Dataset, source: &Path) -> ScioResult<Vec<String>> {
+        let desc = ds
+            .dtype()
+            .and_then(|t| t.to_descriptor())
+            .map_err(|e| hdf5_err(e, source))?;
+        macro_rules! fixed {
+            ($ty:ident, $n:expr) => {{
+                // HDF5 converts between fixed-length string widths; pick the
+                // smallest bucket that fits so buffers stay small.
+                match $n {
+                    0..=32 => ds.read_raw::<$ty<32>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
+                    33..=128 => ds.read_raw::<$ty<128>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
+                    129..=512 => ds.read_raw::<$ty<512>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
+                    513..=2048 => ds.read_raw::<$ty<2048>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
+                    n => {
+                        return Err(parse_err(
+                            format!("fixed-length string width {n} exceeds the supported maximum of 2048"),
+                            source,
+                        ));
+                    }
+                }
+            }};
+        }
+        let out: hdf5::Result<Vec<String>> = match desc {
+            TypeDescriptor::VarLenUnicode => ds
+                .read_raw::<VarLenUnicode>()
+                .map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
+            TypeDescriptor::VarLenAscii => ds
+                .read_raw::<VarLenAscii>()
+                .map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
+            TypeDescriptor::FixedAscii(n) => fixed!(FixedAscii, n),
+            TypeDescriptor::FixedUnicode(n) => fixed!(FixedUnicode, n),
+            other => {
+                return Err(parse_err(
+                    format!("expected a string dataset, found {other}"),
+                    source,
+                ));
+            }
+        };
+        out.map_err(|e| hdf5_err(e, source))
+    }
+
+    /// Reads a scalar string attribute (variable- or fixed-length).
+    fn read_attr_string(loc: &Location, name: &str, source: &Path) -> ScioResult<Option<String>> {
+        let Ok(attr) = loc.attr(name) else {
+            return Ok(None);
+        };
+        let desc = attr
+            .dtype()
+            .and_then(|t| t.to_descriptor())
+            .map_err(|e| hdf5_err(e, source))?;
+        let value: hdf5::Result<String> = match desc {
+            TypeDescriptor::VarLenUnicode => attr
+                .read_scalar::<VarLenUnicode>()
+                .map(|s| s.as_str().to_string()),
+            TypeDescriptor::VarLenAscii => attr
+                .read_scalar::<VarLenAscii>()
+                .map(|s| s.as_str().to_string()),
+            TypeDescriptor::FixedAscii(n) if n <= 512 => attr
+                .read_scalar::<FixedAscii<512>>()
+                .map(|s| s.as_str().to_string()),
+            TypeDescriptor::FixedUnicode(n) if n <= 512 => attr
+                .read_scalar::<FixedUnicode<512>>()
+                .map(|s| s.as_str().to_string()),
+            _ => return Ok(None),
+        };
+        value.map(Some).map_err(|e| hdf5_err(e, source))
+    }
+
+    /// Reads one string column of an anndata dataframe group. Missing values
+    /// (nullable mask, negative categorical code) become empty strings so the
+    /// caller can synthesize a label.
+    fn read_string_column(group: &Group, name: &str, source: &Path) -> ScioResult<Vec<String>> {
+        if let Ok(ds) = group.dataset(name) {
+            return read_string_dataset(&ds, source);
+        }
+        let sub = group.group(name).map_err(|_| {
+            parse_err(
+                format!("column {name} is neither a dataset nor a group"),
+                source,
+            )
+        })?;
+        let enc = read_attr_string(&sub, "encoding-type", source)?.unwrap_or_default();
+        match enc.as_str() {
+            "nullable-string-array" => {
+                let values_ds = sub.dataset("values").map_err(|_| {
+                    parse_err(format!("column {name}: missing values dataset"), source)
+                })?;
+                let mut values = read_string_dataset(&values_ds, source)?;
+                if let Ok(mask_ds) = sub.dataset("mask") {
+                    let mask = read_bool_dataset(&mask_ds, source)?;
+                    if mask.len() != values.len() {
+                        return Err(parse_err(
+                            format!("column {name}: mask/values length mismatch"),
+                            source,
+                        ));
+                    }
+                    for (v, masked) in values.iter_mut().zip(mask) {
+                        if masked {
+                            v.clear();
+                        }
+                    }
+                }
+                Ok(values)
+            }
+            "categorical" => {
+                let categories_ds = sub.dataset("categories").map_err(|_| {
+                    parse_err(format!("column {name}: missing categories dataset"), source)
+                })?;
+                let categories = read_string_dataset(&categories_ds, source)?;
+                let codes: Vec<i64> = sub
+                    .dataset("codes")
+                    .map_err(|_| {
+                        parse_err(format!("column {name}: missing codes dataset"), source)
+                    })?
+                    .read_raw()
+                    .map_err(|e| hdf5_err(e, source))?;
+                codes
+                    .into_iter()
+                    .map(|c| {
+                        if c < 0 {
+                            Ok(String::new())
+                        } else {
+                            categories.get(c as usize).cloned().ok_or_else(|| {
+                                parse_err(
+                                    format!("column {name}: categorical code {c} out of range"),
+                                    source,
+                                )
+                            })
+                        }
+                    })
+                    .collect()
+            }
+            other => Err(ScioError::new(
+                ErrorCode::UnsupportedFormat,
+                format!("column {name}: unsupported encoding-type `{other}`"),
+            )
+            .with_path(source.to_path_buf())),
         }
     }
-    Err(ScioError::new(
-        ErrorCode::ParseError,
-        format!(
-            "missing index dataset under {group}; tried {:?}",
-            candidates
-        ),
-    ))
-}
 
-#[cfg(feature = "h5ad")]
-fn read_optional_strings(file: &File, path: &str) -> ScioResult<Vec<String>> {
-    use hdf5::types::VarLenUnicode;
-    let ds = file
-        .dataset(path)
-        .map_err(|_| ScioError::new(ErrorCode::ParseError, format!("missing dataset: {path}")))?;
-    let data: Vec<VarLenUnicode> = ds
-        .read_raw()
-        .map_err(|e| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-    Ok(data.into_iter().map(|v| v.to_string()).collect())
-}
-
-#[cfg(feature = "h5ad")]
-fn read_x_matrix(file: &File, strict: bool, source: &Path) -> ScioResult<SoaCscMatrix> {
-    // `/X` may be a Group (sparse CSR/CSC) or a Dataset (dense f32).
-    if let Ok(group) = file.group("X") {
-        return read_sparse_x(&group, strict, source);
+    /// h5py stores booleans as an int8-backed enum; fall back to raw int8
+    /// when the enum conversion is unavailable.
+    fn read_bool_dataset(ds: &Dataset, source: &Path) -> ScioResult<Vec<bool>> {
+        if let Ok(v) = ds.read_raw::<bool>() {
+            return Ok(v);
+        }
+        ds.read_raw::<i8>()
+            .map(|v| v.into_iter().map(|b| b != 0).collect())
+            .map_err(|e| hdf5_err(e, source))
     }
-    if let Ok(dataset) = file.dataset("X") {
-        return read_dense_x(&dataset, strict, source);
-    }
-    Err(ScioError::new(
-        ErrorCode::ParseError,
-        "missing /X (neither group nor dataset)",
-    )
-    .with_path(source.to_path_buf()))
-}
 
-#[cfg(feature = "h5ad")]
-fn read_sparse_x(group: &hdf5::Group, strict: bool, source: &Path) -> ScioResult<SoaCscMatrix> {
-    let shape: Vec<u64> = group
-        .attr("shape")
-        .map_err(|_| ScioError::new(ErrorCode::ParseError, "missing /X shape attr"))?
-        .read_raw()
-        .map_err(|e| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-    if shape.len() != 2 {
-        return Err(ScioError::new(ErrorCode::ParseError, "invalid /X shape"));
-    }
-    let n_cells = shape[0] as usize;
-    let n_genes = shape[1] as usize;
-
-    // indptr/indices may be int32 or int64 depending on the writer.
-    let indptr_i64: Vec<i64> = group
-        .dataset("indptr")
-        .map_err(|_| ScioError::new(ErrorCode::ParseError, "missing /X/indptr"))?
-        .read_raw::<i64>()
-        .or_else(|_| {
-            group
-                .dataset("indptr")?
-                .read_raw::<i32>()
-                .map(|v| v.into_iter().map(|x| x as i64).collect())
-        })
-        .map_err(|e: hdf5::Error| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-    let indices_i64: Vec<i64> = group
-        .dataset("indices")
-        .map_err(|_| ScioError::new(ErrorCode::ParseError, "missing /X/indices"))?
-        .read_raw::<i64>()
-        .or_else(|_| {
-            group
-                .dataset("indices")?
-                .read_raw::<i32>()
-                .map(|v| v.into_iter().map(|x| x as i64).collect())
-        })
-        .map_err(|e: hdf5::Error| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-    let data: Vec<f32> = group
-        .dataset("data")
-        .map_err(|_| ScioError::new(ErrorCode::ParseError, "missing /X/data"))?
-        .read_raw()
-        .map_err(|e| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-
-    let enc = read_attr_string(group, "encoding-type").unwrap_or_else(|_| "csr_matrix".to_string());
-
-    if enc == "csc_matrix" {
-        let col_ptr: Vec<u64> = indptr_i64.into_iter().map(|v| v as u64).collect();
-        let mut row_idx: Vec<u32> = Vec::with_capacity(indices_i64.len());
-        let mut values: Vec<f32> = Vec::with_capacity(data.len());
-        check_and_collect(
-            indices_i64.iter().copied().zip(data.iter().copied()),
-            n_genes,
-            strict,
+    /// Resolves the index column of `obs` or `var`: the `_index` attribute
+    /// first, then conventional names.
+    fn read_index(
+        file: &File,
+        group_name: &str,
+        fallbacks: &[&str],
+        source: &Path,
+    ) -> ScioResult<Vec<String>> {
+        let group = file.group(group_name).map_err(|_| {
+            ScioError::new(
+                ErrorCode::UnsupportedFormat,
+                format!(
+                    "/{group_name} is not a group (legacy compound-dataset layout is not supported)"
+                ),
+            )
+            .with_path(source.to_path_buf())
+        })?;
+        let mut candidates: Vec<String> = Vec::with_capacity(fallbacks.len() + 1);
+        if let Some(name) = read_attr_string(&group, "_index", source)? {
+            candidates.push(name);
+        }
+        for f in fallbacks {
+            if !candidates.iter().any(|c| c == f) {
+                candidates.push((*f).to_string());
+            }
+        }
+        for cand in &candidates {
+            if group.link_exists(cand) {
+                return read_string_column(&group, cand, source);
+            }
+        }
+        Err(parse_err(
+            format!("missing index column under /{group_name}; tried {candidates:?}"),
             source,
-            &mut row_idx,
-            &mut values,
-        )?;
-        let matrix = SoaCscMatrix {
-            n_cells,
-            n_genes,
-            col_ptr,
-            row_idx,
-            values,
-        };
-        matrix.validate()?;
-        return Ok(matrix);
+        ))
     }
 
-    if enc == "csr_matrix" {
-        // CSR (per-cell rows) → CSC conversion via triplet sort.
-        let mut triplets: Vec<(u32, u32, f32)> = Vec::with_capacity(indices_i64.len());
-        let mut saw_nonfinite = false;
-        for row in 0..n_cells {
-            let start = indptr_i64[row] as usize;
-            let end = indptr_i64[row + 1] as usize;
-            for idx in start..end {
-                let gene = indices_i64[idx] as usize;
-                let val = data[idx];
-                if gene >= n_genes {
-                    continue;
+    fn read_gene_symbols(
+        file: &File,
+        n_genes: usize,
+        strict: bool,
+        source: &Path,
+    ) -> ScioResult<Option<Vec<String>>> {
+        let Ok(var) = file.group("var") else {
+            return Ok(None);
+        };
+        for col in GENE_SYMBOL_COLUMNS {
+            if !var.link_exists(col) {
+                continue;
+            }
+            match read_string_column(&var, col, source) {
+                Ok(syms) if syms.len() == n_genes => return Ok(Some(syms)),
+                Ok(syms) => {
+                    let err = parse_err(
+                        format!("var/{col} has {} entries, expected {n_genes}", syms.len()),
+                        source,
+                    );
+                    if strict {
+                        return Err(err);
+                    }
+                    warn!(path = %source.display(), column = col, "ignoring gene symbol column: {err}");
                 }
-                if !val.is_finite() {
-                    saw_nonfinite = true;
+                Err(err) => {
+                    if strict {
+                        return Err(err);
+                    }
+                    warn!(path = %source.display(), column = col, "ignoring gene symbol column: {err}");
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    // ---------------------------------------------------------------- matrix
+
+    fn read_x_matrix(
+        file: &File,
+        strict: bool,
+        source: &Path,
+        report: &mut IngestReport,
+    ) -> ScioResult<SoaCscMatrix> {
+        // `/X` may be a Group (sparse CSR/CSC) or a Dataset (dense).
+        if let Ok(group) = file.group("X") {
+            return read_sparse_x(&group, strict, source, report);
+        }
+        if let Ok(dataset) = file.dataset("X") {
+            return read_dense_x(&dataset, strict, source, report);
+        }
+        Err(parse_err("missing /X (neither group nor dataset)", source))
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SparseLayout {
+        /// Rows are cells (`indptr` has `n_cells + 1` entries).
+        Csr,
+        /// Rows are genes (`indptr` has `n_genes + 1` entries).
+        Csc,
+    }
+
+    fn sparse_layout(group: &Group, source: &Path) -> ScioResult<SparseLayout> {
+        if let Some(enc) = read_attr_string(group, "encoding-type", source)? {
+            return match enc.as_str() {
+                "csr_matrix" => Ok(SparseLayout::Csr),
+                "csc_matrix" => Ok(SparseLayout::Csc),
+                other => Err(ScioError::new(
+                    ErrorCode::UnsupportedFormat,
+                    format!("unsupported H5AD matrix encoding: {other}"),
+                )
+                .with_path(source.to_path_buf())),
+            };
+        }
+        // anndata < 0.7 wrote `h5sparse_format` instead of `encoding-type`.
+        if let Some(fmt) = read_attr_string(group, "h5sparse_format", source)? {
+            return match fmt.as_str() {
+                "csr" => Ok(SparseLayout::Csr),
+                "csc" => Ok(SparseLayout::Csc),
+                other => Err(ScioError::new(
+                    ErrorCode::UnsupportedFormat,
+                    format!("unsupported h5sparse_format: {other}"),
+                )
+                .with_path(source.to_path_buf())),
+            };
+        }
+        Ok(SparseLayout::Csr)
+    }
+
+    fn read_shape(group: &Group, source: &Path) -> ScioResult<(usize, usize)> {
+        let attr = group
+            .attr("shape")
+            .or_else(|_| group.attr("h5sparse_shape"))
+            .map_err(|_| parse_err("missing /X shape attribute", source))?;
+        let shape: Vec<i64> = attr.read_raw().map_err(|e| hdf5_err(e, source))?;
+        if shape.len() != 2 || shape.iter().any(|&d| d < 0) {
+            return Err(parse_err(format!("invalid /X shape {shape:?}"), source));
+        }
+        Ok((shape[0] as usize, shape[1] as usize))
+    }
+
+    fn read_sparse_x(
+        group: &Group,
+        strict: bool,
+        source: &Path,
+        report: &mut IngestReport,
+    ) -> ScioResult<SoaCscMatrix> {
+        let layout = sparse_layout(group, source)?;
+        let (n_cells, n_genes) = read_shape(group, source)?;
+        SoaCscMatrix::check_dims(n_cells, n_genes)
+            .map_err(|e| e.with_path(source.to_path_buf()))?;
+
+        let read_i64 = |name: &str| -> ScioResult<Vec<i64>> {
+            group
+                .dataset(name)
+                .map_err(|_| parse_err(format!("missing /X/{name}"), source))?
+                .read_raw::<i64>()
+                .map_err(|e| hdf5_err(e, source))
+        };
+        let indptr = read_i64("indptr")?;
+        let indices = read_i64("indices")?;
+        let data: Vec<f32> = group
+            .dataset("data")
+            .map_err(|_| parse_err("missing /X/data", source))?
+            .read_raw()
+            .map_err(|e| hdf5_err(e, source))?;
+
+        let (major, minor) = match layout {
+            SparseLayout::Csr => (n_cells, n_genes),
+            SparseLayout::Csc => (n_genes, n_cells),
+        };
+
+        // Structural integrity: always an error, independent of strictness.
+        if indptr.len() != major + 1 {
+            return Err(parse_err(
+                format!(
+                    "/X/indptr has {} entries, expected {}",
+                    indptr.len(),
+                    major + 1
+                ),
+                source,
+            ));
+        }
+        if indptr.first().copied() != Some(0) || indptr.windows(2).any(|w| w[0] > w[1]) {
+            return Err(parse_err(
+                "/X/indptr must start at 0 and be non-decreasing",
+                source,
+            ));
+        }
+        if indices.len() != data.len() {
+            return Err(parse_err(
+                format!(
+                    "/X/indices ({}) and /X/data ({}) length mismatch",
+                    indices.len(),
+                    data.len()
+                ),
+                source,
+            ));
+        }
+        if *indptr.last().unwrap_or(&0) as usize != indices.len() {
+            return Err(parse_err(
+                "/X/indptr tail does not match /X/indices length",
+                source,
+            ));
+        }
+        if indices.iter().any(|&i| i < 0) {
+            return Err(parse_err("/X/indices contains a negative index", source));
+        }
+
+        let mut triplets: Vec<(u32, u32, f32)> = Vec::with_capacity(data.len());
+        for major_i in 0..major {
+            let start = indptr[major_i] as usize;
+            let end = indptr[major_i + 1] as usize;
+            for k in start..end {
+                let minor_i = indices[k] as usize;
+                let val = data[k];
+                if minor_i >= minor {
                     if strict {
                         return Err(ScioError::new(
                             ErrorCode::ValidationError,
-                            "non-finite value in /X/data",
+                            format!(
+                                "/X/indices[{k}] = {minor_i} is out of range for shape {n_cells}x{n_genes} \
+                                 (use strict=false to drop)"
+                            ),
                         )
                         .with_path(source.to_path_buf()));
                     }
+                    report.dropped_out_of_range += 1;
                     continue;
                 }
-                triplets.push((row as u32, gene as u32, val));
-            }
-        }
-        if saw_nonfinite {
-            warn!(path = %source.display(), "h5ad /X/data: non-finite dropped");
-        }
-        triplets.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-
-        let mut col_ptr: Vec<u64> = Vec::with_capacity(n_cells + 1);
-        let mut row_idx: Vec<u32> = Vec::with_capacity(triplets.len());
-        let mut values: Vec<f32> = Vec::with_capacity(triplets.len());
-        col_ptr.push(0);
-        let mut cur_col: u32 = 0;
-        for (col, row, val) in triplets {
-            while cur_col < col {
-                col_ptr.push(row_idx.len() as u64);
-                cur_col += 1;
-            }
-            row_idx.push(row);
-            values.push(val);
-        }
-        while col_ptr.len() <= n_cells {
-            col_ptr.push(row_idx.len() as u64);
-        }
-
-        let matrix = SoaCscMatrix {
-            n_cells,
-            n_genes,
-            col_ptr,
-            row_idx,
-            values,
-        };
-        matrix.validate()?;
-        return Ok(matrix);
-    }
-
-    Err(ScioError::new(
-        ErrorCode::UnsupportedFormat,
-        format!("unsupported H5AD matrix encoding: {enc}"),
-    )
-    .with_path(source.to_path_buf()))
-}
-
-#[cfg(feature = "h5ad")]
-fn check_and_collect(
-    pairs: impl Iterator<Item = (i64, f32)>,
-    n_genes: usize,
-    strict: bool,
-    source: &Path,
-    row_idx: &mut Vec<u32>,
-    values: &mut Vec<f32>,
-) -> ScioResult<()> {
-    let mut saw_nonfinite = false;
-    for (gene, val) in pairs {
-        if (gene as usize) >= n_genes {
-            continue;
-        }
-        if !val.is_finite() {
-            saw_nonfinite = true;
-            if strict {
-                return Err(ScioError::new(
-                    ErrorCode::ValidationError,
-                    "non-finite value in /X/data",
-                )
-                .with_path(source.to_path_buf()));
-            }
-            continue;
-        }
-        row_idx.push(gene as u32);
-        values.push(val);
-    }
-    if saw_nonfinite {
-        warn!(path = %source.display(), "h5ad /X/data: non-finite dropped");
-    }
-    Ok(())
-}
-
-#[cfg(feature = "h5ad")]
-fn read_dense_x(dataset: &hdf5::Dataset, strict: bool, source: &Path) -> ScioResult<SoaCscMatrix> {
-    let shape = dataset.shape();
-    if shape.len() != 2 {
-        return Err(ScioError::new(ErrorCode::ParseError, "dense /X must be 2D")
-            .with_path(source.to_path_buf()));
-    }
-    // AnnData dense layout: (cells, genes), stored row-major.
-    let n_cells = shape[0];
-    let n_genes = shape[1];
-    let array: Vec<f32> = dataset
-        .read_raw()
-        .map_err(|e| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-    if array.len() != n_cells * n_genes {
-        return Err(ScioError::new(
-            ErrorCode::ParseError,
-            "dense /X element count does not match its shape",
-        )
-        .with_path(source.to_path_buf()));
-    }
-
-    let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
-    let mut saw_nonfinite = false;
-    for cell in 0..n_cells {
-        for gene in 0..n_genes {
-            let v = array[cell * n_genes + gene];
-            if v == 0.0 {
-                continue;
-            }
-            if !v.is_finite() {
-                saw_nonfinite = true;
-                if strict {
-                    return Err(ScioError::new(
-                        ErrorCode::ValidationError,
-                        "non-finite value in dense /X",
-                    )
-                    .with_path(source.to_path_buf()));
+                if !val.is_finite() {
+                    if strict {
+                        return Err(ScioError::new(
+                            ErrorCode::ValidationError,
+                            format!("non-finite value in /X/data[{k}] (use strict=false to drop)"),
+                        )
+                        .with_path(source.to_path_buf()));
+                    }
+                    report.dropped_non_finite += 1;
+                    continue;
                 }
-                continue;
+                if val == 0.0 {
+                    report.explicit_zeros += 1;
+                    continue;
+                }
+                let (cell, gene) = match layout {
+                    SparseLayout::Csr => (major_i, minor_i),
+                    SparseLayout::Csc => (minor_i, major_i),
+                };
+                triplets.push((cell as u32, gene as u32, val));
             }
-            triplets.push((cell as u32, gene as u32, v));
         }
-    }
-    if saw_nonfinite {
-        warn!(path = %source.display(), "dense h5ad /X: non-finite dropped");
-    }
-    triplets.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
 
-    let mut col_ptr: Vec<u64> = Vec::with_capacity(n_cells + 1);
-    let mut row_idx: Vec<u32> = Vec::with_capacity(triplets.len());
-    let mut values: Vec<f32> = Vec::with_capacity(triplets.len());
-    col_ptr.push(0);
-    let mut cur_col: u32 = 0;
-    for (col, row, val) in triplets {
-        while cur_col < col {
-            col_ptr.push(row_idx.len() as u64);
-            cur_col += 1;
+        let (matrix, merged) = SoaCscMatrix::from_triplets(n_cells, n_genes, triplets);
+        report.merged_duplicates = merged;
+        matrix.validate()?;
+        Ok(matrix)
+    }
+
+    fn read_dense_x(
+        dataset: &Dataset,
+        strict: bool,
+        source: &Path,
+        report: &mut IngestReport,
+    ) -> ScioResult<SoaCscMatrix> {
+        let shape = dataset.shape();
+        if shape.len() != 2 {
+            return Err(parse_err("dense /X must be 2D", source));
         }
-        row_idx.push(row);
-        values.push(val);
-    }
-    while col_ptr.len() <= n_cells {
-        col_ptr.push(row_idx.len() as u64);
-    }
+        // AnnData dense layout: (cells, genes), stored row-major.
+        let n_cells = shape[0];
+        let n_genes = shape[1];
+        SoaCscMatrix::check_dims(n_cells, n_genes)
+            .map_err(|e| e.with_path(source.to_path_buf()))?;
+        let array: Vec<f32> = dataset.read_raw().map_err(|e| hdf5_err(e, source))?;
+        if array.len() != n_cells * n_genes {
+            return Err(parse_err(
+                "dense /X element count does not match its shape",
+                source,
+            ));
+        }
 
-    let matrix = SoaCscMatrix {
-        n_cells,
-        n_genes,
-        col_ptr,
-        row_idx,
-        values,
-    };
-    matrix.validate()?;
-    Ok(matrix)
-}
-
-#[cfg(feature = "h5ad")]
-fn read_attr_string(group: &hdf5::Group, name: &str) -> ScioResult<String> {
-    use hdf5::types::VarLenUnicode;
-    let attr = group
-        .attr(name)
-        .map_err(|_| ScioError::new(ErrorCode::ParseError, format!("missing attr: {name}")))?;
-    let value: VarLenUnicode = attr
-        .read_scalar()
-        .map_err(|e| ScioError::new(ErrorCode::ParseError, e.to_string()))?;
-    Ok(value.to_string())
-}
-
-#[cfg(feature = "h5ad")]
-fn matrix_stats(matrix: &SoaCscMatrix) -> MatrixStats {
-    let nnz = matrix.values.len();
-    let mut total = 0f64;
-    let mut min = f32::MAX;
-    let mut max = f32::MIN;
-    for v in &matrix.values {
-        total += *v as f64;
-        min = min.min(*v);
-        max = max.max(*v);
-    }
-    let denom = matrix.n_cells.saturating_mul(matrix.n_genes);
-    let sparsity = if denom == 0 {
-        1.0
-    } else {
-        1.0 - (nnz as f64 / denom as f64)
-    };
-    MatrixStats {
-        nnz,
-        total_counts: total,
-        min_count: if nnz > 0 { min } else { 0.0 },
-        max_count: if nnz > 0 { max } else { 0.0 },
-        sparsity,
+        let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
+        for cell in 0..n_cells {
+            for gene in 0..n_genes {
+                let v = array[cell * n_genes + gene];
+                if v == 0.0 {
+                    continue;
+                }
+                if !v.is_finite() {
+                    if strict {
+                        return Err(ScioError::new(
+                            ErrorCode::ValidationError,
+                            format!("non-finite value in dense /X at ({cell}, {gene}) (use strict=false to drop)"),
+                        )
+                        .with_path(source.to_path_buf()));
+                    }
+                    report.dropped_non_finite += 1;
+                    continue;
+                }
+                triplets.push((cell as u32, gene as u32, v));
+            }
+        }
+        let (matrix, _merged) = SoaCscMatrix::from_triplets(n_cells, n_genes, triplets);
+        matrix.validate()?;
+        Ok(matrix)
     }
 }
