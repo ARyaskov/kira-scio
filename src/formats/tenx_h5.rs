@@ -15,6 +15,8 @@ use std::path::Path;
 use crate::error::ScioResult;
 #[cfg(not(feature = "tenx-h5"))]
 use crate::error::{ErrorCode, ScioError};
+#[cfg(not(feature = "tenx-h5"))]
+use crate::model::ShapeProbe;
 use crate::model::{InputMetadata, SoaCscMatrix};
 
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
@@ -36,8 +38,17 @@ pub(crate) fn read_all(path: &Path, _strict: bool) -> ScioResult<(InputMetadata,
     .with_path(path.to_path_buf()))
 }
 
+#[cfg(not(feature = "tenx-h5"))]
+pub(crate) fn read_shape(path: &Path) -> ScioResult<ShapeProbe> {
+    Err(ScioError::new(
+        ErrorCode::FeatureDisabled,
+        "tenx-h5 feature is disabled for this build",
+    )
+    .with_path(path.to_path_buf()))
+}
+
 #[cfg(feature = "tenx-h5")]
-pub(crate) use imp::read_all;
+pub(crate) use imp::{read_all, read_shape};
 
 #[cfg(feature = "tenx-h5")]
 mod imp {
@@ -50,15 +61,52 @@ mod imp {
         MajorAxis, compressed_to_csc, hdf5_err, parse_err, read_string_dataset,
     };
     use crate::formats::mtx10x::{fix_length, log_report};
-    use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
+    use crate::model::{IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix};
     use crate::normalize::{
         normalize_barcode, normalize_gene_id, normalize_gene_symbol, synth_barcode,
     };
 
+    fn open(path: &Path) -> ScioResult<File> {
+        File::open(path)
+            .map_err(|e| ScioError::new(ErrorCode::Io, e.to_string()).with_path(path.to_path_buf()))
+    }
+
+    fn read_dims(group: &Group, label: &str, path: &Path) -> ScioResult<(usize, usize)> {
+        let shape: Vec<i64> = group
+            .dataset("shape")
+            .map_err(|_| parse_err(format!("missing {label}/shape"), path))?
+            .read_raw()
+            .map_err(|e| hdf5_err(e, path))?;
+        if shape.len() != 2 || shape.iter().any(|&d| d < 0) {
+            return Err(parse_err(format!("invalid {label}/shape {shape:?}"), path));
+        }
+        // Cell Ranger shape is [n_features, n_barcodes].
+        Ok((shape[1] as usize, shape[0] as usize))
+    }
+
+    /// Shape from the `shape` dataset plus feature types; no entries read.
+    pub(crate) fn read_shape(path: &Path) -> ScioResult<ShapeProbe> {
+        let file = open(path)?;
+        let (group, label) = locate_matrix_group(&file, path)?;
+        let (n_cells, n_genes) = read_dims(&group, &label, path)?;
+        let feature_types = match group.group("features") {
+            Ok(features) if features.link_exists("feature_type") => {
+                let ds = features
+                    .dataset("feature_type")
+                    .map_err(|_| parse_err(format!("{label}/features/feature_type"), path))?;
+                Some(read_string_dataset(&ds, path)?).filter(|t| t.len() == n_genes)
+            }
+            _ => None,
+        };
+        Ok(ShapeProbe {
+            n_cells,
+            n_genes,
+            feature_types,
+        })
+    }
+
     pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
-        let file = File::open(path).map_err(|e| {
-            ScioError::new(ErrorCode::Io, e.to_string()).with_path(path.to_path_buf())
-        })?;
+        let file = open(path)?;
         let mut report = IngestReport::default();
 
         let (group, label) = locate_matrix_group(&file, path)?;
@@ -69,17 +117,7 @@ mod imp {
             read_string_dataset(&ds, path)
         };
 
-        let shape: Vec<i64> = group
-            .dataset("shape")
-            .map_err(|_| parse_err(format!("missing {label}/shape"), path))?
-            .read_raw()
-            .map_err(|e| hdf5_err(e, path))?;
-        if shape.len() != 2 || shape.iter().any(|&d| d < 0) {
-            return Err(parse_err(format!("invalid {label}/shape {shape:?}"), path));
-        }
-        // Cell Ranger shape is [n_features, n_barcodes].
-        let n_genes = shape[0] as usize;
-        let n_cells = shape[1] as usize;
+        let (n_cells, n_genes) = read_dims(&group, &label, path)?;
 
         let mut barcodes: Vec<String> = strings("barcodes")?
             .into_iter()

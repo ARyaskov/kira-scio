@@ -451,6 +451,16 @@ pub struct InputMetadata {
     pub report: IngestReport,
 }
 
+/// Cheap probe of an input's dimensions, read from headers and label files
+/// without parsing matrix entries. Feature types are carried so the
+/// modality filter can be applied to the gene count.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ShapeProbe {
+    pub n_cells: usize,
+    pub n_genes: usize,
+    pub feature_types: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CanonicalData {
     pub metadata: InputMetadata,

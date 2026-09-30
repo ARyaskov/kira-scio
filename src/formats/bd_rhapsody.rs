@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{InputMetadata, SoaCscMatrix};
+use crate::model::{InputMetadata, ShapeProbe, SoaCscMatrix};
 
 /// Priority class of a BD count-table file name; lower sorts first.
 fn bd_candidate_rank(lower_name: &str) -> Option<u8> {
@@ -89,6 +89,10 @@ pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
 pub fn read_matrix(path: &Path, strict: bool) -> ScioResult<SoaCscMatrix> {
     let resolved = resolve_bd_input_path(path)?;
     crate::formats::dense::read_matrix(&resolved, strict)
+}
+
+pub(crate) fn read_shape(path: &Path) -> ScioResult<ShapeProbe> {
+    crate::formats::dense::read_shape(&resolve_bd_input_path(path)?)
 }
 
 pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {

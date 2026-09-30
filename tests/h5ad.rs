@@ -240,3 +240,32 @@ fn matrix_source_selects_x_raw_x_or_a_layer() {
     .unwrap_err();
     assert_eq!(err.code, ErrorCode::MissingFile);
 }
+
+#[test]
+fn read_shape_matches_read_all_for_each_source_and_filter() {
+    use kira_scio::{FeatureTypeFilter, H5adSource};
+    for name in ["csr", "csc", "dense", "legacy_fixed"] {
+        let r = Reader::new(fixture(name));
+        assert_eq!(r.read_shape().unwrap(), (2, 3), "{name}");
+    }
+    let r = Reader::with_options(
+        fixture("feature_types"),
+        ReaderOptions {
+            strict: true,
+            feature_types: FeatureTypeFilter::GeneExpression,
+            ..Default::default()
+        },
+    );
+    assert_eq!(r.read_shape().unwrap(), (2, 2));
+    let data = r.read_all().unwrap();
+    assert_eq!((data.metadata.n_cells, data.metadata.n_genes), (2, 2));
+    let r = Reader::with_options(
+        fixture("raw_layer"),
+        ReaderOptions {
+            strict: true,
+            h5ad_source: H5adSource::RawX,
+            ..Default::default()
+        },
+    );
+    assert_eq!(r.read_shape().unwrap(), (2, 3));
+}

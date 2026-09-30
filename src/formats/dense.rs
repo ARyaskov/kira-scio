@@ -10,7 +10,7 @@ use std::path::Path;
 use flate2::read::GzDecoder;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
+use crate::model::{IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix};
 use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
@@ -52,6 +52,56 @@ pub(crate) fn parse_dense_full(
         report: parsed.report,
     };
     Ok((metadata, parsed.matrix))
+}
+
+/// Dimensions from the header and the number of data lines, without
+/// parsing values.
+pub(crate) fn read_shape(path: &Path) -> ScioResult<ShapeProbe> {
+    let reader = open_maybe_gz(path)?;
+    let mut header_fields: Option<(bool, usize)> = None;
+    let mut data_lines = 0usize;
+    for (line_no, line) in reader.lines().enumerate() {
+        let line = line?;
+        let line = if line_no == 0 {
+            strip_bom(&line)
+        } else {
+            &line
+        };
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() || trimmed.trim_start().starts_with('#') {
+            continue;
+        }
+        match header_fields {
+            None => {
+                let delim = detect_delimiter(trimmed);
+                let header = split_line(trimmed, delim);
+                let first = header.first().map(|s| s.as_str());
+                let cell_major = first_col_looks_like_cell_header(first);
+                let labelled = cell_major
+                    || first_col_looks_like_gene_header(first)
+                    || first.is_some_and(|s| s.is_empty());
+                let n = header.len().saturating_sub(usize::from(labelled));
+                header_fields = Some((cell_major, n));
+            }
+            Some(_) => data_lines += 1,
+        }
+    }
+    let Some((cell_major, n)) = header_fields else {
+        return Err(
+            ScioError::new(ErrorCode::ParseError, "dense input has no header")
+                .with_path(path.to_path_buf()),
+        );
+    };
+    let (n_cells, n_genes) = if cell_major {
+        (data_lines, n)
+    } else {
+        (n, data_lines)
+    };
+    Ok(ShapeProbe {
+        n_cells,
+        n_genes,
+        feature_types: None,
+    })
 }
 
 #[derive(Debug)]

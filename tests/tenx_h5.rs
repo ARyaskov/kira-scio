@@ -94,3 +94,22 @@ fn read_metadata_and_read_matrix_agree_with_read_all() {
     assert_eq!(md.n_cells, mx.n_cells);
     assert_eq!(md.stats.nnz, mx.values.len());
 }
+
+#[test]
+fn read_shape_matches_read_all() {
+    let r = Reader::new(fixture("v3_filtered"));
+    assert_eq!(r.read_shape().unwrap(), (2, 3));
+    let r = Reader::with_options(
+        fixture("v3_filtered"),
+        ReaderOptions {
+            strict: true,
+            feature_types: FeatureTypeFilter::GeneExpression,
+            ..Default::default()
+        },
+    );
+    assert_eq!(r.read_shape().unwrap(), (2, 2));
+    assert_eq!(
+        Reader::new(fixture("v2_legacy")).read_shape().unwrap(),
+        (2, 3)
+    );
+}

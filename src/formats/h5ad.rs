@@ -23,6 +23,8 @@ use std::path::Path;
 use crate::error::ScioResult;
 #[cfg(not(feature = "h5ad"))]
 use crate::error::{ErrorCode, ScioError};
+#[cfg(not(feature = "h5ad"))]
+use crate::model::ShapeProbe;
 use crate::model::{InputMetadata, SoaCscMatrix};
 
 use crate::api::H5adSource;
@@ -50,8 +52,17 @@ pub(crate) fn read_all(
     .with_path(path.to_path_buf()))
 }
 
+#[cfg(not(feature = "h5ad"))]
+pub(crate) fn read_shape(path: &Path, _source: &H5adSource) -> ScioResult<ShapeProbe> {
+    Err(ScioError::new(
+        ErrorCode::FeatureDisabled,
+        "h5ad feature is disabled for this build",
+    )
+    .with_path(path.to_path_buf()))
+}
+
 #[cfg(feature = "h5ad")]
-pub(crate) use imp::read_all;
+pub(crate) use imp::{read_all, read_shape};
 
 #[cfg(feature = "h5ad")]
 mod imp {
@@ -66,8 +77,62 @@ mod imp {
         MajorAxis, compressed_to_csc, hdf5_err, parse_err, read_attr_string, read_bool_dataset,
         read_string_dataset,
     };
-    use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
+    use crate::model::{IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix};
     use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
+
+    /// Matrix location and the var group labelling its gene axis.
+    fn matrix_and_var_paths(which: &H5adSource) -> (String, &'static str) {
+        match which {
+            H5adSource::X => ("X".to_string(), "var"),
+            H5adSource::RawX => ("raw/X".to_string(), "raw/var"),
+            H5adSource::Layer(name) => (format!("layers/{name}"), "var"),
+        }
+    }
+
+    fn open(path: &Path) -> ScioResult<File> {
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
+        {
+            return Err(ScioError::new(
+                ErrorCode::UnsupportedFormat,
+                "gzip-compressed .h5ad cannot be opened by HDF5; decompress it first",
+            )
+            .with_path(path.to_path_buf()));
+        }
+        File::open(path)
+            .map_err(|e| ScioError::new(ErrorCode::Io, e.to_string()).with_path(path.to_path_buf()))
+    }
+
+    /// Shape from the matrix metadata plus the feature-type column; no
+    /// entries are read.
+    pub(crate) fn read_shape(path: &Path, which: &H5adSource) -> ScioResult<ShapeProbe> {
+        let file = open(path)?;
+        let (matrix_path, var_path) = matrix_and_var_paths(which);
+        let (n_cells, n_genes) = if let Ok(group) = file.group(&matrix_path) {
+            read_shape_attr(&group, path)?
+        } else if let Ok(ds) = file.dataset(&matrix_path) {
+            let dims = ds.shape();
+            if dims.len() != 2 {
+                return Err(parse_err(format!("dense /{matrix_path} must be 2D"), path));
+            }
+            (dims[0], dims[1])
+        } else {
+            return Err(ScioError::new(
+                ErrorCode::MissingFile,
+                format!("requested matrix /{matrix_path} is not present in the file"),
+            )
+            .with_path(path.to_path_buf()));
+        };
+        let feature_types =
+            read_var_column(&file, var_path, FEATURE_TYPE_COLUMNS, n_genes, false, path)?;
+        Ok(ShapeProbe {
+            n_cells,
+            n_genes,
+            feature_types,
+        })
+    }
 
     /// Index column names tried when the group carries no `_index` attribute.
     const BARCODE_FALLBACKS: &[&str] = &[
@@ -90,28 +155,9 @@ mod imp {
         strict: bool,
         which: &H5adSource,
     ) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
-        if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
-        {
-            return Err(ScioError::new(
-                ErrorCode::UnsupportedFormat,
-                "gzip-compressed .h5ad cannot be opened by HDF5; decompress it first",
-            )
-            .with_path(path.to_path_buf()));
-        }
-        let file = File::open(path).map_err(|e| {
-            ScioError::new(ErrorCode::Io, e.to_string()).with_path(path.to_path_buf())
-        })?;
+        let file = open(path)?;
         let mut report = IngestReport::default();
-
-        // Matrix location and the var group that labels its gene axis.
-        let (matrix_path, var_path): (String, &str) = match which {
-            H5adSource::X => ("X".to_string(), "var"),
-            H5adSource::RawX => ("raw/X".to_string(), "raw/var"),
-            H5adSource::Layer(name) => (format!("layers/{name}"), "var"),
-        };
+        let (matrix_path, var_path) = matrix_and_var_paths(which);
         if !file.link_exists(&matrix_path) {
             return Err(ScioError::new(
                 ErrorCode::MissingFile,
@@ -389,7 +435,7 @@ mod imp {
         Ok(MajorAxis::Cells)
     }
 
-    fn read_shape(group: &Group, source: &Path) -> ScioResult<(usize, usize)> {
+    fn read_shape_attr(group: &Group, source: &Path) -> ScioResult<(usize, usize)> {
         let attr = group
             .attr("shape")
             .or_else(|_| group.attr("h5sparse_shape"))
@@ -408,7 +454,7 @@ mod imp {
         report: &mut IngestReport,
     ) -> ScioResult<SoaCscMatrix> {
         let layout = sparse_layout(group, source)?;
-        let (n_cells, n_genes) = read_shape(group, source)?;
+        let (n_cells, n_genes) = read_shape_attr(group, source)?;
         compressed_to_csc(
             group, "/X", layout, n_cells, n_genes, strict, source, report,
         )

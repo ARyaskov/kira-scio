@@ -85,6 +85,9 @@ pub struct Reader {
     input: PathBuf,
     options: ReaderOptions,
     detected: OnceLock<DetectedFormat>,
+    /// Metadata of the last full parse; serves later `read_metadata` calls
+    /// without touching the input again. The matrix is never cached.
+    metadata: OnceLock<InputMetadata>,
 }
 
 impl Clone for Reader {
@@ -93,6 +96,7 @@ impl Clone for Reader {
             input: self.input.clone(),
             options: self.options.clone(),
             detected: OnceLock::new(),
+            metadata: OnceLock::new(),
         }
     }
 }
@@ -106,6 +110,7 @@ impl Reader {
                 ..ReaderOptions::default()
             },
             detected: OnceLock::new(),
+            metadata: OnceLock::new(),
         }
     }
 
@@ -114,7 +119,29 @@ impl Reader {
             input: input.as_ref().to_path_buf(),
             options,
             detected: OnceLock::new(),
+            metadata: OnceLock::new(),
         }
+    }
+
+    /// `(n_cells, n_genes)` of the matrix `read_all` would return, obtained
+    /// from headers, label files and shape metadata without parsing matrix
+    /// entries. Honors the feature-type filter and MTX transposition.
+    pub fn read_shape(&self) -> ScioResult<(usize, usize)> {
+        let probe = match self.detected_format()? {
+            DetectedFormat::Mtx10x => crate::formats::mtx10x::read_shape(&self.input)?,
+            DetectedFormat::BdRhapsodyWta => crate::formats::bd_rhapsody::read_shape(&self.input)?,
+            DetectedFormat::DenseTsvCsv => crate::formats::dense::read_shape(&self.input)?,
+            DetectedFormat::H5ad => {
+                crate::formats::h5ad::read_shape(&self.input, &self.options.h5ad_source)?
+            }
+            DetectedFormat::TenxH5 => crate::formats::tenx_h5::read_shape(&self.input)?,
+            DetectedFormat::Loom => crate::formats::loom::read_shape(&self.input)?,
+        };
+        let n_genes = match (&self.options.feature_types, probe.feature_types.as_ref()) {
+            (FeatureTypeFilter::All, _) | (_, None) => probe.n_genes,
+            (filter, Some(types)) => types.iter().filter(|t| filter.keeps(t)).count(),
+        };
+        Ok((probe.n_cells, n_genes))
     }
 
     pub fn detected_format(&self) -> ScioResult<DetectedFormat> {
@@ -130,6 +157,9 @@ impl Reader {
     }
 
     pub fn read_metadata(&self) -> ScioResult<InputMetadata> {
+        if let Some(cached) = self.metadata.get() {
+            return Ok(cached.clone());
+        }
         Ok(self.load()?.0)
     }
 
@@ -180,6 +210,7 @@ impl Reader {
         self.apply_feature_filter(&mut metadata, &mut matrix)?;
         self.finalize_labels(&mut metadata);
         metadata.marginals = Marginals::from_matrix(&matrix);
+        let _ = self.metadata.set(metadata.clone());
         Ok((metadata, matrix))
     }
 

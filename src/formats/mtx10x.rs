@@ -10,7 +10,9 @@ use rustc_hash::FxHashSet;
 use tracing::warn;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{CountMismatch, IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
+use crate::model::{
+    CountMismatch, IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix,
+};
 use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
 #[derive(Debug, Clone)]
@@ -139,6 +141,68 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
     };
 
     Ok((metadata, matrix))
+}
+
+/// Dimensions from the Matrix Market header plus the label files, applying
+/// the same transposition rule as [`read_mtx`], without reading entries.
+pub(crate) fn read_shape(path: &Path) -> ScioResult<ShapeProbe> {
+    let ds = discover(path)?;
+    let reader = open_maybe_gz_existing(&ds.matrix)?;
+    let mut n_rows = None::<usize>;
+    let mut n_cols = None::<usize>;
+    for (line_no, line) in reader.lines().enumerate() {
+        let line = line?;
+        let line = if line_no == 0 {
+            strip_bom(&line)
+        } else {
+            &line
+        };
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('%') {
+            continue;
+        }
+        let mut header = t.split_whitespace();
+        let parse = |tok: Option<&str>, what: &str| -> ScioResult<usize> {
+            tok.and_then(|s| s.parse::<usize>().ok()).ok_or_else(|| {
+                ScioError::new(ErrorCode::ParseError, format!("invalid {what}"))
+                    .with_path(ds.matrix.clone())
+            })
+        };
+        n_rows = Some(parse(header.next(), "n_rows")?);
+        n_cols = Some(parse(header.next(), "n_cols")?);
+        break;
+    }
+    let (Some(mut n_genes), Some(mut n_cells)) = (n_rows, n_cols) else {
+        return Err(ScioError::new(ErrorCode::ParseError, "missing MTX header")
+            .with_path(ds.matrix.clone()));
+    };
+
+    let mut scratch = IngestReport::default();
+    let features_path = ds.features.as_ref().or(ds.genes.as_ref());
+    let (n_feature_labels, feature_types) = match features_path {
+        Some(p) => {
+            let (ids, _, types) = parse_features(p, false, &mut scratch)?;
+            (Some(ids.len()), types)
+        }
+        None => (None, None),
+    };
+    let n_barcode_labels = match ds.barcodes.as_ref() {
+        Some(p) => Some(parse_barcodes(p, &mut scratch)?.len()),
+        None => None,
+    };
+    if let (Some(nf), Some(nb)) = (n_feature_labels, n_barcode_labels) {
+        let declared_fit = nf == n_genes && nb == n_cells;
+        let swapped_fit = nf == n_cells && nb == n_genes && n_genes != n_cells;
+        if !declared_fit && swapped_fit {
+            std::mem::swap(&mut n_genes, &mut n_cells);
+        }
+    }
+    let feature_types = feature_types.filter(|t| t.len() == n_genes);
+    Ok(ShapeProbe {
+        n_cells,
+        n_genes,
+        feature_types,
+    })
 }
 
 fn normalize_barcode_idx(idx: usize) -> String {
