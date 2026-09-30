@@ -132,12 +132,37 @@ impl SoaCscMatrix {
         })
     }
 
+    /// Builds a canonical CSC matrix from `(cell, gene, value)` triplets,
+    /// checking every coordinate against the shape first.
+    ///
+    /// Duplicate coordinates are summed (Matrix Market / SciPy convention)
+    /// and entries whose value is exactly zero after merging are dropped.
+    /// Returns the matrix and the number of merged duplicate entries.
+    pub fn try_from_triplets(
+        n_cells: usize,
+        n_genes: usize,
+        triplets: Vec<(u32, u32, f32)>,
+    ) -> ScioResult<(Self, usize)> {
+        Self::check_dims(n_cells, n_genes)?;
+        if let Some((c, g, _)) = triplets
+            .iter()
+            .find(|(c, g, _)| *c as usize >= n_cells || *g as usize >= n_genes)
+        {
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
+                format!("triplet ({c}, {g}) is outside the {n_cells}x{n_genes} shape"),
+            ));
+        }
+        Ok(Self::from_triplets(n_cells, n_genes, triplets))
+    }
+
     /// Builds a canonical CSC matrix from `(col, row, value)` triplets.
     ///
     /// Duplicate coordinates are summed (Matrix Market / SciPy convention) and
     /// entries whose value is exactly zero after merging are dropped. Returns
     /// the matrix and the number of merged duplicate entries. Callers must
-    /// ensure `col < n_cells` and `row < n_genes`.
+    /// ensure `col < n_cells` and `row < n_genes`; the public
+    /// [`Self::try_from_triplets`] checks this.
     pub(crate) fn from_triplets(
         n_cells: usize,
         n_genes: usize,
@@ -675,6 +700,16 @@ mod tests {
             ..Default::default()
         };
         assert!(!lossy.is_lossless());
+    }
+
+    #[test]
+    fn try_from_triplets_rejects_out_of_shape_coordinates() {
+        assert!(SoaCscMatrix::try_from_triplets(2, 2, vec![(2, 0, 1.0)]).is_err());
+        assert!(SoaCscMatrix::try_from_triplets(2, 2, vec![(0, 2, 1.0)]).is_err());
+        let (m, merged) =
+            SoaCscMatrix::try_from_triplets(2, 2, vec![(1, 1, 1.0), (1, 1, 2.0)]).unwrap();
+        assert_eq!(merged, 1);
+        assert_eq!(m.values, vec![3.0]);
     }
 
     #[test]
