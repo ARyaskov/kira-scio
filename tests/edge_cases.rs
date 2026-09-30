@@ -72,14 +72,24 @@ fn s2_duplicate_genes_are_kept_in_strict() {
     );
 }
 
-/// content sniffing should classify a `.txt` file with a leading comment
-/// and float values as BD Rhapsody.
+/// content sniffing classifies a `.txt` file with a leading `#` comment
+/// as BD Rhapsody; the value type plays no role.
 #[test]
-fn s3_content_sniff_promotes_bd_for_floats() {
+fn s3_content_sniff_promotes_bd_on_comment() {
     let p = temp_file("s3a", "txt", "#meta\ncellA\tcellB\nGENE1\t1.0\t2.5\n");
     assert_eq!(
         detect_input_format(&p).unwrap(),
         DetectedFormat::BdRhapsodyWta
+    );
+}
+
+/// fractional values alone mean "normalized upstream", not BD Rhapsody.
+#[test]
+fn s3_content_sniff_keeps_floats_as_dense() {
+    let p = temp_file("s3c", "txt", "gene\tcellA\tcellB\nGENE1\t0.53\t1.2\n");
+    assert_eq!(
+        detect_input_format(&p).unwrap(),
+        DetectedFormat::DenseTsvCsv
     );
 }
 

@@ -139,47 +139,27 @@ fn classify_sniffed_lines(lines: &[String]) -> DetectedFormat {
     if header_tabs == 0 && header_commas == 0 {
         return DetectedFormat::DenseTsvCsv;
     }
-    let delim: u8 = if header_commas > header_tabs {
-        b','
+    let delim = if header_commas > header_tabs {
+        ','
     } else {
-        b'\t'
+        '\t'
     };
 
-    // Heuristic 1: a leading comment line is the strongest BD Rhapsody signal.
-    if saw_comment {
-        return DetectedFormat::BdRhapsodyWta;
-    }
-
-    // Heuristic 2: at least one data row with float values (e.g. ".5", "1.0")
-    // suggests normalized BD Rhapsody output. Plain integers default to
-    // generic dense TSV so 10x/MEX-shaped TSVs don't get mis-promoted.
-    let any_float = data_lines.iter().any(|line| has_float_value(line, delim));
-    if any_float {
+    // BD Rhapsody signals: the Sequence Analysis Pipeline writes `#` comment
+    // lines above the header and a `Cell_Index` first column. Value type is
+    // deliberately not used: BD tables hold integer molecule counts, and
+    // fractional values only mean the table was normalized upstream, which
+    // says nothing about its origin.
+    let first_cell = header
+        .split(delim)
+        .next()
+        .map(|c| c.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    if saw_comment || first_cell == "cell_index" {
         return DetectedFormat::BdRhapsodyWta;
     }
 
     DetectedFormat::DenseTsvCsv
-}
-
-fn has_float_value(line: &str, delim: u8) -> bool {
-    let mut first = true;
-    for token in line.split(delim as char) {
-        if first {
-            // Skip the gene/cell label column.
-            first = false;
-            continue;
-        }
-        let t = token.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if t.contains('.') || t.contains('e') || t.contains('E') {
-            if t.parse::<f64>().is_ok() {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn sniff_first_lines(path: &Path, max_lines: usize) -> ScioResult<Vec<String>> {
@@ -215,32 +195,44 @@ fn sniff_first_lines(path: &Path, max_lines: usize) -> ScioResult<Vec<String>> {
 mod tests {
     use super::*;
 
+    fn lines(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn sniffer_promotes_bd_on_leading_comment() {
-        let lines = vec![
-            "#meta".to_string(),
-            "cellA\tcellB".to_string(),
-            "GENE\t1.0\t2.5".to_string(),
-        ];
         assert_eq!(
-            classify_sniffed_lines(&lines),
+            classify_sniffed_lines(&lines(&["#meta", "cellA\tcellB", "GENE\t1\t2"])),
             DetectedFormat::BdRhapsodyWta
         );
     }
 
     #[test]
-    fn sniffer_defaults_to_dense_for_integers() {
-        let lines = vec!["cellA\tcellB".to_string(), "GENE\t1\t2".to_string()];
-        assert_eq!(classify_sniffed_lines(&lines), DetectedFormat::DenseTsvCsv);
+    fn sniffer_promotes_bd_on_cell_index_header() {
+        assert_eq!(
+            classify_sniffed_lines(&lines(&["Cell_Index,GENE_A,GENE_B", "1,5,0"])),
+            DetectedFormat::BdRhapsodyWta
+        );
+    }
+
+    #[test]
+    fn sniffer_keeps_dense_for_integers_and_for_floats() {
+        assert_eq!(
+            classify_sniffed_lines(&lines(&["cellA\tcellB", "GENE\t1\t2"])),
+            DetectedFormat::DenseTsvCsv
+        );
+        // Fractional values mean "normalized", not "BD Rhapsody".
+        assert_eq!(
+            classify_sniffed_lines(&lines(&["gene\tC1\tC2", "G1\t0.53\t1.2"])),
+            DetectedFormat::DenseTsvCsv
+        );
     }
 
     #[test]
     fn sniffer_recognizes_mtx_header() {
-        let lines = vec![
-            "%%MatrixMarket".to_string(),
-            "2 2 2".to_string(),
-            "1 1 1".to_string(),
-        ];
-        assert_eq!(classify_sniffed_lines(&lines), DetectedFormat::Mtx10x);
+        assert_eq!(
+            classify_sniffed_lines(&lines(&["%%MatrixMarket", "2 2 2", "1 1 1"])),
+            DetectedFormat::Mtx10x
+        );
     }
 }
