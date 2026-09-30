@@ -76,7 +76,7 @@ pub fn detect_input_format(path: &Path) -> ScioResult<DetectedFormat> {
         return Ok(DetectedFormat::DenseTsvCsv);
     }
 
-    Ok(sniff_content_or_default(path)?)
+    sniff_content_or_default(path)
 }
 
 /// BD Rhapsody count tables by file name (lower-cased by the caller).
