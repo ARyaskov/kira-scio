@@ -10,7 +10,9 @@ use std::path::Path;
 use flate2::read::GzDecoder;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix};
+use crate::model::{
+    IngestReport, InputMetadata, MatrixKind, MatrixStats, Provenance, ShapeProbe, SoaCscMatrix,
+};
 use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
@@ -26,6 +28,18 @@ pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
         feature_types: None,
         marginals: Default::default(),
         report: parsed.report,
+        provenance: Provenance {
+            source_path: path.to_path_buf(),
+            dialect: if parsed.cell_major {
+                "dense-cell-major"
+            } else {
+                "dense-gene-major"
+            }
+            .to_string(),
+            dataset_prefix: None,
+            matrix_kind: MatrixKind::from_path(path),
+            matrix_source: None,
+        },
     })
 }
 
@@ -50,6 +64,18 @@ pub(crate) fn parse_dense_full(
         feature_types: None,
         marginals: Default::default(),
         report: parsed.report,
+        provenance: Provenance {
+            source_path: path.to_path_buf(),
+            dialect: if parsed.cell_major {
+                "dense-cell-major"
+            } else {
+                "dense-gene-major"
+            }
+            .to_string(),
+            dataset_prefix: None,
+            matrix_kind: MatrixKind::from_path(path),
+            matrix_source: None,
+        },
     };
     Ok((metadata, parsed.matrix))
 }
@@ -112,6 +138,7 @@ struct ParsedDense {
     matrix: SoaCscMatrix,
     stats: MatrixStats,
     report: IngestReport,
+    cell_major: bool,
 }
 
 fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
@@ -284,6 +311,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
         matrix,
         stats,
         report,
+        cell_major,
     })
 }
 

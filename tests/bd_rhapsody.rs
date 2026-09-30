@@ -124,3 +124,18 @@ fn mex_export_directory_reads_as_mtx() {
     assert_eq!(data.metadata.n_cells, 2);
     assert_eq!(data.metadata.gene_symbols, vec!["GENE_A", "GENE_B"]);
 }
+
+#[test]
+fn unfiltered_mols_per_cell_table_is_detected() {
+    let d = temp_dir("unfiltered");
+    let p = d.join("Sample_RSEC_MolsPerCell_Unfiltered.csv");
+    write(&p, "Cell_Index,GENE_A\n1,2\n");
+    assert_eq!(
+        detect_input_format(&p).unwrap(),
+        DetectedFormat::BdRhapsodyWta
+    );
+    assert_eq!(
+        Reader::new(&p).read_metadata().unwrap().format,
+        "bd_rhapsody_wta"
+    );
+}

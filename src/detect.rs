@@ -88,8 +88,7 @@ fn filename_is_bd_counts(name: &str) -> bool {
         || name == "raw_counts.tsv.gz"
         || name.contains("_raw_counts.tsv")
         || name.contains(".raw_counts.tsv")
-        || name.contains("_molspercell.csv")
-        || name.contains("_molspercell.tsv")
+        || (name.contains("_molspercell") && (name.contains(".csv") || name.contains(".tsv")))
 }
 
 fn sniff_content_or_default(path: &Path) -> ScioResult<DetectedFormat> {

@@ -77,7 +77,9 @@ mod imp {
         MajorAxis, compressed_to_csc, hdf5_err, parse_err, read_attr_string, read_bool_dataset,
         read_string_dataset,
     };
-    use crate::model::{IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix};
+    use crate::model::{
+        IngestReport, InputMetadata, MatrixKind, MatrixStats, Provenance, ShapeProbe, SoaCscMatrix,
+    };
     use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
 
     /// Matrix location and the var group labelling its gene axis.
@@ -234,6 +236,16 @@ mod imp {
             feature_types,
             marginals: Default::default(),
             report,
+            provenance: Provenance {
+                source_path: path.to_path_buf(),
+                dialect: match read_attr_string(&file, "encoding-version", path)? {
+                    Some(v) => format!("anndata-{v}"),
+                    None => "anndata-legacy".to_string(),
+                },
+                dataset_prefix: None,
+                matrix_kind: MatrixKind::from_path(path),
+                matrix_source: Some(matrix_path),
+            },
         };
         Ok((metadata, matrix))
     }

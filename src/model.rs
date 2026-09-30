@@ -436,6 +436,65 @@ impl IngestReport {
     }
 }
 
+/// Whether a matrix holds every droplet/bead or only called cells.
+///
+/// Empty-droplet detection and ambient-RNA correction need the raw matrix;
+/// most downstream steps expect the filtered one. Inferred from Cell Ranger
+/// and BD Rhapsody naming (`raw_feature_bc_matrix`, `filtered_…`,
+/// `_Unfiltered_`), `Unknown` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum MatrixKind {
+    #[default]
+    Unknown,
+    /// All barcodes, before cell calling.
+    Raw,
+    /// Barcodes that passed cell calling.
+    Filtered,
+}
+
+impl MatrixKind {
+    /// Infers the kind from any path component (directory or file name).
+    pub fn from_path(path: &std::path::Path) -> Self {
+        for comp in path.components().rev() {
+            let name = comp.as_os_str().to_string_lossy().to_ascii_lowercase();
+            if name.contains("unfiltered")
+                || name.contains("raw_feature_bc_matrix")
+                || name.contains("raw_gene_bc_matrices")
+            {
+                return Self::Raw;
+            }
+            if name.contains("filtered_feature_bc_matrix")
+                || name.contains("filtered_gene_bc_matrices")
+                || name.contains("filtered")
+            {
+                return Self::Filtered;
+            }
+        }
+        Self::Unknown
+    }
+}
+
+/// Where the data came from and which dialect of the format it used;
+/// meant to be persisted next to the canonical matrix.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Provenance {
+    /// The file the matrix was actually read from (after directory
+    /// resolution), e.g. `…/matrix.mtx.gz` or `…/Sample_DBEC_MolsPerCell.csv`.
+    pub source_path: std::path::PathBuf,
+    /// Format dialect: `mtx-v3` / `mtx-v2` / `mtx`, `bd-molspercell-dbec` /
+    /// `bd-molspercell-rsec` / `bd-molspercell` / `bd-raw-counts`,
+    /// `dense-gene-major` / `dense-cell-major`, `anndata-<encoding-version>`
+    /// / `anndata-legacy`, `cellranger-h5-v3` / `cellranger-h5-v2`.
+    pub dialect: String,
+    /// Prefix of a prefixed MEX triplet (`<prefix>_matrix.mtx`).
+    pub dataset_prefix: Option<String>,
+    /// Raw (all droplets) or filtered (called cells), when the naming says.
+    pub matrix_kind: MatrixKind,
+    /// Matrix read from an AnnData file: `X`, `raw/X` or `layers/<name>`.
+    pub matrix_source: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct InputMetadata {
     pub format: String,
@@ -453,6 +512,8 @@ pub struct InputMetadata {
     pub feature_types: Option<Vec<String>>,
     /// What the reader tolerated or repaired; see [`IngestReport`].
     pub report: IngestReport,
+    /// Source file, dialect and raw/filtered kind; see [`Provenance`].
+    pub provenance: Provenance,
 }
 
 /// Cheap probe of an input's dimensions, read from headers and label files
@@ -575,6 +636,29 @@ mod tests {
         none.validate().unwrap();
 
         assert!(m.retain_genes(&[true; 3]).is_err());
+    }
+
+    #[test]
+    fn matrix_kind_from_path_components() {
+        use std::path::Path;
+        assert_eq!(
+            MatrixKind::from_path(Path::new("/run/outs/raw_feature_bc_matrix/matrix.mtx.gz")),
+            MatrixKind::Raw
+        );
+        assert_eq!(
+            MatrixKind::from_path(Path::new("/run/outs/filtered_feature_bc_matrix.h5")),
+            MatrixKind::Filtered
+        );
+        assert_eq!(
+            MatrixKind::from_path(Path::new(
+                "/bd/S_RSEC_MolsPerCell_Unfiltered_MEX/matrix.mtx"
+            )),
+            MatrixKind::Raw
+        );
+        assert_eq!(
+            MatrixKind::from_path(Path::new("/data/sample.h5ad")),
+            MatrixKind::Unknown
+        );
     }
 
     #[test]

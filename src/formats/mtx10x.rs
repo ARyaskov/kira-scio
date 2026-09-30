@@ -11,7 +11,8 @@ use tracing::warn;
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
 use crate::model::{
-    CountMismatch, IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix,
+    CountMismatch, IngestReport, InputMetadata, MatrixKind, MatrixStats, Provenance, ShapeProbe,
+    SoaCscMatrix,
 };
 use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol, strip_bom};
 
@@ -138,6 +139,20 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         feature_types,
         marginals: Default::default(),
         report,
+        provenance: Provenance {
+            dialect: if ds.features.is_some() {
+                "mtx-v3"
+            } else if ds.genes.is_some() {
+                "mtx-v2"
+            } else {
+                "mtx"
+            }
+            .to_string(),
+            dataset_prefix: ds.prefix.clone(),
+            matrix_kind: MatrixKind::from_path(&ds.matrix),
+            source_path: ds.matrix,
+            matrix_source: None,
+        },
     };
 
     Ok((metadata, matrix))

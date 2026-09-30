@@ -61,7 +61,9 @@ mod imp {
         MajorAxis, compressed_to_csc, hdf5_err, parse_err, read_string_dataset,
     };
     use crate::formats::mtx10x::{fix_length, log_report};
-    use crate::model::{IngestReport, InputMetadata, MatrixStats, ShapeProbe, SoaCscMatrix};
+    use crate::model::{
+        IngestReport, InputMetadata, MatrixKind, MatrixStats, Provenance, ShapeProbe, SoaCscMatrix,
+    };
     use crate::normalize::{
         normalize_barcode, normalize_gene_id, normalize_gene_symbol, synth_barcode,
     };
@@ -225,6 +227,18 @@ mod imp {
             feature_types,
             marginals: Default::default(),
             report,
+            provenance: Provenance {
+                source_path: path.to_path_buf(),
+                dialect: if label == "/matrix" {
+                    "cellranger-h5-v3"
+                } else {
+                    "cellranger-h5-v2"
+                }
+                .to_string(),
+                dataset_prefix: None,
+                matrix_kind: MatrixKind::from_path(path),
+                matrix_source: None,
+            },
         };
         Ok((metadata, matrix))
     }

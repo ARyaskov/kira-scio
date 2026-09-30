@@ -113,3 +113,14 @@ fn read_shape_matches_read_all() {
         (2, 3)
     );
 }
+
+#[test]
+fn provenance_records_cell_ranger_dialect_and_kind() {
+    use kira_scio::MatrixKind;
+    let md = Reader::new(fixture("v3_filtered")).read_metadata().unwrap();
+    assert_eq!(md.provenance.dialect, "cellranger-h5-v3");
+    assert_eq!(md.provenance.matrix_kind, MatrixKind::Filtered);
+    let md = Reader::new(fixture("v2_legacy")).read_metadata().unwrap();
+    assert_eq!(md.provenance.dialect, "cellranger-h5-v2");
+    assert_eq!(md.provenance.matrix_kind, MatrixKind::Unknown);
+}

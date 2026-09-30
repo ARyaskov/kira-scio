@@ -269,3 +269,27 @@ fn read_shape_matches_read_all_for_each_source_and_filter() {
     );
     assert_eq!(r.read_shape().unwrap(), (2, 3));
 }
+
+#[test]
+fn provenance_records_dialect_and_matrix_source() {
+    use kira_scio::{H5adSource, MatrixKind};
+    let md = Reader::new(fixture("csr")).read_metadata().unwrap();
+    assert_eq!(md.provenance.dialect, "anndata-0.1.0");
+    assert_eq!(md.provenance.matrix_source.as_deref(), Some("X"));
+    assert_eq!(md.provenance.matrix_kind, MatrixKind::Unknown);
+    assert_eq!(md.provenance.source_path, fixture("csr"));
+    let md = Reader::with_options(
+        fixture("raw_layer"),
+        ReaderOptions {
+            strict: true,
+            h5ad_source: H5adSource::Layer("counts".to_string()),
+            ..Default::default()
+        },
+    )
+    .read_metadata()
+    .unwrap();
+    assert_eq!(
+        md.provenance.matrix_source.as_deref(),
+        Some("layers/counts")
+    );
+}

@@ -17,6 +17,6 @@ pub use formats::mtx10x::{
     discover, exists_plain_or_gz, gz_path, open_maybe_gz_existing, resolve_shared_cache_filename,
 };
 pub use model::{
-    CanonicalData, CountMismatch, IngestReport, InputMetadata, Marginals, MatrixStats,
-    SoaCscMatrix, TOP_FEATURES,
+    CanonicalData, CountMismatch, IngestReport, InputMetadata, Marginals, MatrixKind, MatrixStats,
+    Provenance, SoaCscMatrix, TOP_FEATURES,
 };

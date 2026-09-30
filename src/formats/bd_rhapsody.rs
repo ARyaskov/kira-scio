@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{ErrorCode, ScioError, ScioResult};
-use crate::model::{InputMetadata, ShapeProbe, SoaCscMatrix};
+use crate::model::{InputMetadata, MatrixKind, ShapeProbe, SoaCscMatrix};
 
 /// Priority class of a BD count-table file name; lower sorts first.
 fn bd_candidate_rank(lower_name: &str) -> Option<u8> {
@@ -79,10 +79,35 @@ pub fn resolve_bd_input_path(path: &Path) -> ScioResult<PathBuf> {
         })
 }
 
+/// Marks metadata produced by the dense reader as BD Rhapsody output.
+/// MolsPerCell tables hold putative cells (BD's cell calling), so they are
+/// `Filtered` unless the name says `_Unfiltered_`.
+fn brand(md: &mut InputMetadata, resolved: &Path) {
+    md.format = "bd_rhapsody_wta".to_string();
+    let lower = resolved
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    md.provenance.dialect = if lower.contains("_dbec_molspercell") {
+        "bd-molspercell-dbec"
+    } else if lower.contains("_rsec_molspercell") {
+        "bd-molspercell-rsec"
+    } else if lower.contains("molspercell") {
+        "bd-molspercell"
+    } else {
+        "bd-raw-counts"
+    }
+    .to_string();
+    if md.provenance.matrix_kind == MatrixKind::Unknown && lower.contains("molspercell") {
+        md.provenance.matrix_kind = MatrixKind::Filtered;
+    }
+}
+
 pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
     let resolved = resolve_bd_input_path(path)?;
     let mut md = crate::formats::dense::read_metadata(&resolved, strict)?;
-    md.format = "bd_rhapsody_wta".to_string();
+    brand(&mut md, &resolved);
     Ok(md)
 }
 
@@ -98,7 +123,7 @@ pub(crate) fn read_shape(path: &Path) -> ScioResult<ShapeProbe> {
 pub(crate) fn read_all(path: &Path, strict: bool) -> ScioResult<(InputMetadata, SoaCscMatrix)> {
     let resolved = resolve_bd_input_path(path)?;
     let (mut md, mx) = crate::formats::dense::parse_dense_full(&resolved, strict)?;
-    md.format = "bd_rhapsody_wta".to_string();
+    brand(&mut md, &resolved);
     Ok((md, mx))
 }
 
