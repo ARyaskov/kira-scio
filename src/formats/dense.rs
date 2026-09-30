@@ -385,18 +385,46 @@ fn count_fields(line: &str, delim: char) -> usize {
     }
 }
 
+/// Header labels that mark a gene-major (genes-as-rows) table. The first
+/// header cell names the row-label column; the remaining cells are barcodes.
 fn first_col_looks_like_gene_header(v: Option<&str>) -> bool {
     let Some(v) = v else { return false };
     matches!(
         v.trim().to_ascii_lowercase().as_str(),
-        "gene" | "genes" | "gene_symbol" | "genesymbol" | "symbol" | "feature" | "features"
+        "gene"
+            | "genes"
+            | "gene_id"
+            | "geneid"
+            | "gene_name"
+            | "genename"
+            | "gene_symbol"
+            | "genesymbol"
+            | "symbol"
+            | "feature"
+            | "features"
+            | "feature_id"
+            | "feature_name"
+            | "ensembl_id"
+            | "var_names"
     )
 }
 
+/// Header labels that mark a cell-major (cells-as-rows) table. `cell_index`
+/// is the first column of BD Rhapsody `*_MolsPerCell.csv` output.
 fn first_col_looks_like_cell_header(v: Option<&str>) -> bool {
     let Some(v) = v else { return false };
     matches!(
         v.trim().to_ascii_lowercase().as_str(),
-        "barcode" | "barcodes" | "cell" | "cell_id" | "cellid"
+        "barcode"
+            | "barcodes"
+            | "cell"
+            | "cells"
+            | "cell_id"
+            | "cellid"
+            | "cell_index"
+            | "cellindex"
+            | "cell_barcode"
+            | "cellbarcode"
+            | "obs_names"
     )
 }

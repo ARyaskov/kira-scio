@@ -55,7 +55,7 @@ pub fn detect_input_format(path: &Path) -> ScioResult<DetectedFormat> {
         return Ok(DetectedFormat::Loom);
     }
 
-    if filename_is_bd_raw_counts(&name) {
+    if filename_is_bd_counts(&name) {
         return Ok(DetectedFormat::BdRhapsodyWta);
     }
 
@@ -74,13 +74,17 @@ pub fn detect_input_format(path: &Path) -> ScioResult<DetectedFormat> {
     Ok(sniff_content_or_default(path)?)
 }
 
-fn filename_is_bd_raw_counts(name: &str) -> bool {
+/// BD Rhapsody count tables by file name (lower-cased by the caller).
+///
+/// Covers the legacy `raw_counts.tsv` convention and the Sequence Analysis
+/// Pipeline output `<sample>_{RSEC,DBEC}_MolsPerCell.csv[.gz]`.
+fn filename_is_bd_counts(name: &str) -> bool {
     name == "raw_counts.tsv"
         || name == "raw_counts.tsv.gz"
-        || name.ends_with("_raw_counts.tsv")
-        || name.ends_with("_raw_counts.tsv.gz")
         || name.contains("_raw_counts.tsv")
         || name.contains(".raw_counts.tsv")
+        || name.contains("_molspercell.csv")
+        || name.contains("_molspercell.tsv")
 }
 
 fn sniff_content_or_default(path: &Path) -> ScioResult<DetectedFormat> {
