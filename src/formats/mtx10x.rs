@@ -26,8 +26,6 @@ pub struct MtxDatasetPaths {
     pub barcodes: Option<PathBuf>,
 }
 
-pub const SHARED_CACHE_BASENAME: &str = "kira-organelle.bin";
-
 pub fn contains_mtx_dataset(path: &Path) -> ScioResult<bool> {
     if !path.is_dir() {
         return Ok(false);
@@ -800,13 +798,6 @@ pub fn detect_prefix(input_dir: &Path) -> ScioResult<Option<String>> {
     Ok(prefixes.into_iter().next())
 }
 
-pub fn resolve_shared_cache_filename(prefix: Option<&str>) -> String {
-    match prefix {
-        Some(p) if !p.is_empty() => format!("{p}.{SHARED_CACHE_BASENAME}"),
-        _ => SHARED_CACHE_BASENAME.to_string(),
-    }
-}
-
 fn extract_prefix(name: &str) -> Option<&str> {
     // Longest-suffix-first so ".matrix.mtx.gz" beats ".matrix.mtx".
     const SUFFIXES: &[&str] = &[
@@ -837,48 +828,8 @@ fn extract_prefix(name: &str) -> Option<&str> {
     None
 }
 
-pub fn candidate_path(input_dir: &Path, prefix: Option<&str>, name: &str) -> PathBuf {
-    match prefix {
-        Some(p) if !p.is_empty() => {
-            let underscore = input_dir.join(format!("{p}_{name}"));
-            if exists_plain_or_gz(&underscore) {
-                return underscore;
-            }
-            let dotted = input_dir.join(format!("{p}.{name}"));
-            if exists_plain_or_gz(&dotted) {
-                return dotted;
-            }
-            underscore
-        }
-        _ => input_dir.join(name),
-    }
-}
-
-pub fn choose_existing(path: &Path) -> Option<PathBuf> {
-    if path.exists() {
-        return Some(path.to_path_buf());
-    }
-    let gz = gz_path(path);
-    if gz.exists() {
-        return Some(gz);
-    }
-    None
-}
-
-pub fn exists_plain_or_gz(path: &Path) -> bool {
-    path.exists() || gz_path(path).exists()
-}
-
-pub fn gz_path(path: &Path) -> PathBuf {
-    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-        path.with_extension(format!("{ext}.gz"))
-    } else {
-        path.with_extension("gz")
-    }
-}
-
-pub fn open_maybe_gz_existing(path: &Path) -> ScioResult<BufReader<Box<dyn Read>>> {
-    let existing = choose_existing(path).ok_or_else(|| {
+pub(crate) fn open_maybe_gz_existing(path: &Path) -> ScioResult<BufReader<Box<dyn Read>>> {
+    let existing = crate::cache_paths::choose_existing(path).ok_or_else(|| {
         ScioError::new(
             ErrorCode::MissingFile,
             format!("missing file: {}", path.display()),
