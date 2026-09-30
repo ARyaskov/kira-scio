@@ -1,24 +1,7 @@
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use kira_scio::{DetectedFormat, Reader, detect_input_format};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(path: &PathBuf, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
+mod common;
+use common::{temp_dir, write};
 
 #[test]
 fn detect_mtx_prefixed_dot() {

@@ -3,30 +3,13 @@
 //! rows whose counts are on a different scale; `FeatureTypeFilter` lets the
 //! caller keep one modality.
 
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use kira_scio::{FeatureTypeFilter, Reader, ReaderOptions};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_ft_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(path: &Path, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
+mod common;
+use common::{TestDir, temp_dir, write};
 
 /// 3 features x 2 cells: two genes and one antibody with a huge count.
-fn multimodal(label: &str) -> PathBuf {
+fn multimodal(label: &str) -> TestDir {
     let d = temp_dir(label);
     write(
         &d.join("matrix.mtx"),
@@ -52,7 +35,8 @@ fn with_filter(filter: FeatureTypeFilter) -> ReaderOptions {
 
 #[test]
 fn feature_types_are_exposed_and_kept_by_default() {
-    let data = Reader::new(multimodal("default")).read_all().unwrap();
+    let d = multimodal("default");
+    let data = Reader::new(&d).read_all().unwrap();
     assert_eq!(
         data.metadata.feature_types.as_deref(),
         Some(&["Gene Expression", "Gene Expression", "Antibody Capture"].map(String::from)[..])
@@ -64,12 +48,10 @@ fn feature_types_are_exposed_and_kept_by_default() {
 
 #[test]
 fn gene_expression_filter_drops_antibody_features() {
-    let data = Reader::with_options(
-        multimodal("gex"),
-        with_filter(FeatureTypeFilter::GeneExpression),
-    )
-    .read_all()
-    .unwrap();
+    let d_gex = multimodal("gex");
+    let data = Reader::with_options(&d_gex, with_filter(FeatureTypeFilter::GeneExpression))
+        .read_all()
+        .unwrap();
     assert_eq!(data.metadata.n_genes, 2);
     assert_eq!(data.metadata.gene_ids, vec!["ENSG1", "ENSG2"]);
     assert_eq!(data.metadata.gene_symbols, vec!["CD3E", "CD4"]);
@@ -91,19 +73,18 @@ fn gene_expression_filter_drops_antibody_features() {
     data.matrix.validate().unwrap();
 
     // read_metadata and read_matrix see the same filtered view.
-    let md = Reader::with_options(
-        multimodal("gex_md"),
-        with_filter(FeatureTypeFilter::GeneExpression),
-    )
-    .read_metadata()
-    .unwrap();
+    let d_gex_md = multimodal("gex_md");
+    let md = Reader::with_options(&d_gex_md, with_filter(FeatureTypeFilter::GeneExpression))
+        .read_metadata()
+        .unwrap();
     assert_eq!(md.n_genes, 2);
 }
 
 #[test]
 fn only_filter_selects_named_modalities_case_insensitively() {
+    let d_only = multimodal("only");
     let data = Reader::with_options(
-        multimodal("only"),
+        &d_only,
         with_filter(FeatureTypeFilter::Only(vec![
             "antibody capture".to_string(),
         ])),
@@ -117,8 +98,9 @@ fn only_filter_selects_named_modalities_case_insensitively() {
 
 #[test]
 fn filter_matching_nothing_yields_an_empty_gene_axis() {
+    let d_none = multimodal("none");
     let data = Reader::with_options(
-        multimodal("none"),
+        &d_none,
         with_filter(FeatureTypeFilter::Only(vec![
             "CRISPR Guide Capture".to_string(),
         ])),

@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+mod common;
+
 use kira_scio::{DetectedFormat, ErrorCode, Reader, ReaderOptions, detect_input_format};
 
 fn fixture(name: &str) -> PathBuf {
@@ -149,15 +151,8 @@ fn x_is_read_even_when_raw_counts_exist() {
 
 #[test]
 fn gzip_compressed_h5ad_is_rejected_with_a_clear_error() {
-    let dir = std::env::temp_dir().join(format!(
-        "kira_scio_h5ad_gz_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join("x.h5ad.gz");
+    let d = common::temp_dir("h5ad_gz");
+    let p = d.join("x.h5ad.gz");
     std::fs::write(&p, b"not really gzip").unwrap();
     let err = Reader::new(&p).read_all().unwrap_err();
     assert_eq!(err.code, ErrorCode::UnsupportedFormat);

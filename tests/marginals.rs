@@ -1,27 +1,10 @@
 //! Per-cell / per-gene marginals and count-integrity flags exposed on
 //! `InputMetadata` for every format, recomputed after feature filtering.
 
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use kira_scio::{FeatureTypeFilter, Marginals, Reader, ReaderOptions};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_marg_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(path: &Path, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
+mod common;
+use common::{temp_dir, write};
 
 #[test]
 fn mtx_marginals_and_integer_flags() {

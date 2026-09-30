@@ -1,27 +1,10 @@
 //! `IngestReport` semantics: lossy repairs are errors in strict mode and are
 //! recorded in lenient mode; lossless normalizations are recorded in both.
 
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use kira_scio::{CountMismatch, DetectedFormat, ErrorCode, Reader, ReaderOptions};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_report_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(path: &Path, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
+mod common;
+use common::{TestDir, temp_dir, write};
 
 fn lenient(force: Option<DetectedFormat>) -> ReaderOptions {
     ReaderOptions {
@@ -33,7 +16,7 @@ fn lenient(force: Option<DetectedFormat>) -> ReaderOptions {
     }
 }
 
-fn mtx_dataset(label: &str, mtx: &str, features: &str, barcodes: &str) -> PathBuf {
+fn mtx_dataset(label: &str, mtx: &str, features: &str, barcodes: &str) -> TestDir {
     let d = temp_dir(label);
     write(&d.join("matrix.mtx"), mtx);
     write(&d.join("features.tsv"), features);

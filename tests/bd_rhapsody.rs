@@ -3,26 +3,11 @@
 //! with `#` comment lines.
 
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use kira_scio::{DetectedFormat, Reader, detect_input_format};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_bd_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(path: &Path, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
+mod common;
+use common::{temp_dir, write};
 
 const MOLS_PER_CELL: &str = "\
 ####################\n\
@@ -108,7 +93,8 @@ fn legacy_raw_counts_still_wins_over_mols_per_cell() {
 #[test]
 fn mex_export_directory_reads_as_mtx() {
     // `<sample>_RSEC_MolsPerCell_MEX/` uses the 10x MEX triplet.
-    let d = temp_dir("mex").join("Sample_RSEC_MolsPerCell_MEX");
+    let root = temp_dir("mex");
+    let d = root.join("Sample_RSEC_MolsPerCell_MEX");
     fs::create_dir_all(&d).unwrap();
     write(
         &d.join("matrix.mtx"),

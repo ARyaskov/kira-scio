@@ -1,34 +1,7 @@
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use kira_scio::{DetectedFormat, Reader, ReaderOptions, detect_input_format};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_edge_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(path: &PathBuf, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
-
-fn temp_file(label: &str, ext: &str, content: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("kira_scio_edge_{label}_{ts}.{ext}"));
-    write(&path, content);
-    path
-}
+mod common;
+use common::{temp_dir, write};
 
 /// `gene_ids` and `gene_symbols` should expose distinct columns.
 #[test]
@@ -50,9 +23,9 @@ fn s1_features_tsv_separates_id_and_symbol() {
 /// triggering a hard failure in strict mode.
 #[test]
 fn s2_duplicate_genes_are_kept_in_strict() {
-    let p = temp_file(
-        "s2",
-        "tsv",
+    let d = temp_dir("s2");
+    let p = d.file(
+        "input.tsv",
         "#meta\ncellA\tcellB\nMT-ND1\t1\t2\nMT-ND1\t3\t4\nNDUFS1\t5\t6\n",
     );
     let data = Reader::with_options(
@@ -77,7 +50,8 @@ fn s2_duplicate_genes_are_kept_in_strict() {
 /// as BD Rhapsody; the value type plays no role.
 #[test]
 fn s3_content_sniff_promotes_bd_on_comment() {
-    let p = temp_file("s3a", "txt", "#meta\ncellA\tcellB\nGENE1\t1.0\t2.5\n");
+    let d = temp_dir("s3a");
+    let p = d.file("input.txt", "#meta\ncellA\tcellB\nGENE1\t1.0\t2.5\n");
     assert_eq!(
         detect_input_format(&p).unwrap(),
         DetectedFormat::BdRhapsodyWta
@@ -87,7 +61,8 @@ fn s3_content_sniff_promotes_bd_on_comment() {
 /// fractional values alone mean "normalized upstream", not BD Rhapsody.
 #[test]
 fn s3_content_sniff_keeps_floats_as_dense() {
-    let p = temp_file("s3c", "txt", "gene\tcellA\tcellB\nGENE1\t0.53\t1.2\n");
+    let d = temp_dir("s3c");
+    let p = d.file("input.txt", "gene\tcellA\tcellB\nGENE1\t0.53\t1.2\n");
     assert_eq!(
         detect_input_format(&p).unwrap(),
         DetectedFormat::DenseTsvCsv
@@ -97,7 +72,8 @@ fn s3_content_sniff_keeps_floats_as_dense() {
 /// a plain integer-only `.txt` should default to DenseTsvCsv, **not** BD.
 #[test]
 fn s3_content_sniff_keeps_integers_as_dense() {
-    let p = temp_file("s3b", "txt", "cellA\tcellB\nGENE1\t1\t2\n");
+    let d = temp_dir("s3b");
+    let p = d.file("input.txt", "cellA\tcellB\nGENE1\t1\t2\n");
     assert_eq!(
         detect_input_format(&p).unwrap(),
         DetectedFormat::DenseTsvCsv
@@ -108,12 +84,11 @@ fn s3_content_sniff_keeps_integers_as_dense() {
 /// to BD Rhapsody, even if the actual extension is `.txt`.
 #[test]
 fn s3_filename_substring_matches_bd() {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let p = std::env::temp_dir().join(format!("sample_raw_counts.tsv_{ts}.txt"));
-    write(&p, "gene\tcellA\tcellB\nGENE1\t1\t2\n");
+    let d = temp_dir("s3d");
+    let p = d.file(
+        "sample_raw_counts.tsv_export.txt",
+        "gene\tcellA\tcellB\nGENE1\t1\t2\n",
+    );
     assert_eq!(
         detect_input_format(&p).unwrap(),
         DetectedFormat::BdRhapsodyWta
@@ -124,7 +99,8 @@ fn s3_filename_substring_matches_bd() {
 /// row-major matrix.
 #[test]
 fn s4_empty_first_header_cell() {
-    let p = temp_file("s4", "tsv", "\tcellA\tcellB\nMT-ND1\t1\t2\nNDUFS1\t3\t4\n");
+    let d = temp_dir("s4");
+    let p = d.file("input.tsv", "\tcellA\tcellB\nMT-ND1\t1\t2\nNDUFS1\t3\t4\n");
     let data = Reader::with_options(
         &p,
         ReaderOptions {
@@ -144,7 +120,8 @@ fn s4_empty_first_header_cell() {
 /// strict mode rejects non-finite numeric tokens.
 #[test]
 fn s5_strict_rejects_non_finite() {
-    let p = temp_file("s5", "tsv", "gene\tC1\tC2\nMT\tInf\t1\n");
+    let d = temp_dir("s5");
+    let p = d.file("input.tsv", "gene\tC1\tC2\nMT\tInf\t1\n");
     let err = Reader::with_options(
         &p,
         ReaderOptions {

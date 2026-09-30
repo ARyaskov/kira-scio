@@ -2,32 +2,18 @@
 //! dataset prefix and raw/filtered kind inferred from naming.
 
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use kira_scio::{MatrixKind, Reader};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_prov_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(path: &Path, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
+mod common;
+use common::{temp_dir, write};
 
 const MTX: &str = "%%MatrixMarket matrix coordinate integer general\n1 1 1\n1 1 1\n";
 
 #[test]
 fn mtx_v3_prefixed_raw_directory() {
-    let d = temp_dir("mtxv3").join("raw_feature_bc_matrix");
+    let root = temp_dir("mtxv3");
+    let d = root.join("raw_feature_bc_matrix");
     fs::create_dir_all(&d).unwrap();
     write(&d.join("S1_matrix.mtx"), MTX);
     write(&d.join("S1_features.tsv"), "ENSG1\tA\tGene Expression\n");
@@ -43,9 +29,8 @@ fn mtx_v3_prefixed_raw_directory() {
 
 #[test]
 fn mtx_v2_filtered_directory() {
-    let d = temp_dir("mtxv2")
-        .join("filtered_gene_bc_matrices")
-        .join("GRCh38");
+    let root = temp_dir("mtxv2");
+    let d = root.join("filtered_gene_bc_matrices").join("GRCh38");
     fs::create_dir_all(&d).unwrap();
     write(&d.join("matrix.mtx"), MTX);
     write(&d.join("genes.tsv"), "ENSG1\tA\n");

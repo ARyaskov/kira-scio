@@ -2,29 +2,12 @@
 //! stripping (any species / feature type), duplicate detection, and the
 //! opt-in scanpy-style de-duplication.
 
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use kira_scio::{Reader, ReaderOptions};
 
-fn temp_dir(label: &str) -> PathBuf {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("kira_scio_labels_{label}_{ts}"));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
+mod common;
+use common::{TestDir, temp_dir, write};
 
-fn write(path: &Path, content: &str) {
-    let mut f = fs::File::create(path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-}
-
-fn mtx(label: &str, features: &str, barcodes: &str) -> PathBuf {
+fn mtx(label: &str, features: &str, barcodes: &str) -> TestDir {
     let d = temp_dir(label);
     write(
         &d.join("matrix.mtx"),
