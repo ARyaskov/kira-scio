@@ -264,3 +264,92 @@ fn unprefixed_matrix_file_next_to_prefixed_datasets() {
     assert_eq!(plain.metadata.gene_ids, vec!["ENSG0"]);
     assert_eq!(plain.matrix.values, vec![7.0]);
 }
+
+/// Matrix Market banner handling.
+#[test]
+fn banner_field_and_format_are_honored() {
+    // `pattern`: two tokens per entry, value 1.
+    let d = dataset(
+        "pattern",
+        "%%MatrixMarket matrix coordinate pattern general\n2 2 2\n1 1\n2 2\n",
+    );
+    let data = Reader::new(&d).read_all().unwrap();
+    assert_eq!(data.matrix.values, vec![1.0, 1.0]);
+    assert!(data.metadata.stats.is_integer);
+
+    // `real` with scientific notation and negative integer fields parse.
+    let d = dataset(
+        "real",
+        "%%MatrixMarket matrix coordinate real general\n2 2 2\n1 1 1e2\n2 2 -2.5\n",
+    );
+    let data = Reader::new(&d).read_all().unwrap();
+    assert_eq!(data.matrix.values, vec![100.0, -2.5]);
+    let d = dataset(
+        "int_neg",
+        "%%MatrixMarket matrix coordinate integer general\n2 2 2\n1 1 -3\n2 2 +4\n",
+    );
+    let data = Reader::new(&d).read_all().unwrap();
+    assert_eq!(data.matrix.values, vec![-3.0, 4.0]);
+
+    // Banner is case-insensitive.
+    let d = dataset(
+        "case",
+        "%%matrixmarket MATRIX Coordinate Integer General\n2 2 1\n1 1 9\n",
+    );
+    assert_eq!(Reader::new(&d).read_all().unwrap().matrix.values, vec![9.0]);
+}
+
+#[test]
+fn unsupported_banners_are_rejected() {
+    for (label, banner) in [
+        (
+            "array",
+            "%%MatrixMarket matrix array integer general\n2 2\n1\n2\n3\n4\n",
+        ),
+        (
+            "complex",
+            "%%MatrixMarket matrix coordinate complex general\n2 2 1\n1 1 1 0\n",
+        ),
+        (
+            "symmetric",
+            "%%MatrixMarket matrix coordinate integer symmetric\n2 2 1\n2 1 1\n",
+        ),
+        (
+            "vector",
+            "%%MatrixMarket vector coordinate integer general\n2 1\n1 1\n",
+        ),
+    ] {
+        let d = dataset(label, banner);
+        let err = Reader::new(&d).read_all().unwrap_err();
+        assert_eq!(err.code, ErrorCode::UnsupportedFormat, "{label}: {err}");
+    }
+}
+
+#[test]
+fn missing_banner_is_strict_error_and_lenient_real() {
+    let d = dataset("no_banner", "2 2 1\n1 1 2.5\n");
+    let err = Reader::new(&d).read_all().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ParseError);
+    assert!(err.message.contains("banner"), "{}", err.message);
+    let data = Reader::with_options(
+        &d,
+        ReaderOptions {
+            strict: false,
+            ..Default::default()
+        },
+    )
+    .read_all()
+    .unwrap();
+    assert_eq!(data.matrix.values, vec![2.5]);
+}
+
+#[test]
+fn malformed_entries_name_the_line() {
+    let d = dataset(
+        "malformed",
+        "%%MatrixMarket matrix coordinate integer general\n2 2 2\n1 1 1\n2 x 1\n",
+    );
+    let err = Reader::new(&d).read_all().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ParseError);
+    assert!(err.message.contains("line 4"), "{}", err.message);
+}

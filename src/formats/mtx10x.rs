@@ -300,8 +300,101 @@ impl ParsedMtx {
     }
 }
 
+/// Value field declared by the Matrix Market banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MtxField {
+    Integer,
+    Real,
+    /// Presence-only entries: two tokens per line, value taken as 1.
+    Pattern,
+}
+
+/// Parses `%%MatrixMarket matrix coordinate <field> <symmetry>`.
+fn parse_banner(line: &str, source: &Path) -> ScioResult<MtxField> {
+    let unsupported = |msg: String| {
+        ScioError::new(ErrorCode::UnsupportedFormat, msg).with_path(source.to_path_buf())
+    };
+    let mut it = line.split_whitespace().skip(1).map(str::to_ascii_lowercase);
+    let object = it.next().unwrap_or_default();
+    let format = it.next().unwrap_or_default();
+    let field = it.next().unwrap_or_default();
+    let symmetry = it.next().unwrap_or_else(|| "general".to_string());
+    if object != "matrix" {
+        return Err(unsupported(format!(
+            "Matrix Market object `{object}` is not supported (expected `matrix`)"
+        )));
+    }
+    if format != "coordinate" {
+        return Err(unsupported(format!(
+            "Matrix Market format `{format}` is not supported (expected `coordinate`; \
+             dense `array` files must be converted first)"
+        )));
+    }
+    if symmetry != "general" {
+        return Err(unsupported(format!(
+            "Matrix Market symmetry `{symmetry}` is not supported (expected `general`)"
+        )));
+    }
+    match field.as_str() {
+        "integer" => Ok(MtxField::Integer),
+        "real" | "double" => Ok(MtxField::Real),
+        "pattern" => Ok(MtxField::Pattern),
+        other => Err(unsupported(format!(
+            "Matrix Market field `{other}` is not supported (expected integer, real or pattern)"
+        ))),
+    }
+}
+
+/// Advances past ASCII whitespace and returns the next token, if any.
+fn take_token<'a>(cur: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let start = cur.iter().position(|b| !b.is_ascii_whitespace())?;
+    let rest = &cur[start..];
+    let end = rest
+        .iter()
+        .position(|b| b.is_ascii_whitespace())
+        .unwrap_or(rest.len());
+    *cur = &rest[end..];
+    Some(&rest[..end])
+}
+
+/// Decimal unsigned integer with overflow checking.
+fn parse_uint(tok: &[u8]) -> Option<usize> {
+    if tok.is_empty() {
+        return None;
+    }
+    let mut v: usize = 0;
+    for &b in tok {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        v = v.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+    }
+    Some(v)
+}
+
+/// Optionally signed decimal integer as `f32`; `None` when the token is not
+/// a plain integer (caller falls back to float parsing).
+fn parse_int_value(tok: &[u8]) -> Option<f32> {
+    let (neg, digits) = match tok.first()? {
+        b'-' => (true, &tok[1..]),
+        b'+' => (false, &tok[1..]),
+        _ => (false, tok),
+    };
+    let magnitude = parse_uint(digits)? as f32;
+    Some(if neg { -magnitude } else { magnitude })
+}
+
+fn parse_value(tok: &[u8], field: MtxField) -> Option<f32> {
+    if field == MtxField::Integer
+        && let Some(v) = parse_int_value(tok)
+    {
+        return Some(v);
+    }
+    std::str::from_utf8(tok).ok()?.parse::<f32>().ok()
+}
+
 fn parse_matrix_market(
-    reader: BufReader<Box<dyn Read>>,
+    mut reader: BufReader<Box<dyn Read>>,
     source: &Path,
     strict: bool,
 ) -> ScioResult<ParsedMtx> {
@@ -311,51 +404,77 @@ fn parse_matrix_market(
     let mut entries_seen = 0usize;
     let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
     let mut report = IngestReport::default();
+    let mut field: Option<MtxField> = None;
 
-    for (line_no, line) in reader.lines().enumerate() {
-        let line = line?;
-        let line = if line_no == 0 {
-            let stripped = strip_bom(&line);
-            report.bom_stripped |= stripped.len() != line.len();
-            stripped
-        } else {
-            &line
-        };
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('%') {
+    let malformed = |what: &str, line_no: usize| {
+        ScioError::new(
+            ErrorCode::ParseError,
+            format!("malformed {what} at line {line_no}"),
+        )
+        .with_path(source.to_path_buf())
+    };
+
+    // One reusable buffer instead of a String per line.
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
+    let mut line_no = 0usize;
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        line_no += 1;
+        let mut line: &[u8] = &buf;
+        if line_no == 1 && line.starts_with(UTF8_BOM_BYTES) {
+            report.bom_stripped = true;
+            line = &line[UTF8_BOM_BYTES.len()..];
+        }
+        let line = line.trim_ascii();
+        if line.is_empty() {
+            continue;
+        }
+        if line[0] == b'%' {
+            if field.is_none() && n_rows.is_none() {
+                let text = String::from_utf8_lossy(line);
+                if text
+                    .get(..14)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("%%MatrixMarket"))
+                {
+                    field = Some(parse_banner(&text, source)?);
+                }
+            }
             continue;
         }
 
         if n_rows.is_none() {
-            let mut header = t.split_whitespace();
-            let r = header
-                .next()
-                .ok_or_else(|| header_err(source, line_no))?
-                .parse::<usize>()
-                .map_err(|_| {
-                    ScioError::new(ErrorCode::ParseError, "invalid n_rows")
-                        .with_path(source.to_path_buf())
-                })?;
-            let c = header
-                .next()
-                .ok_or_else(|| header_err(source, line_no))?
-                .parse::<usize>()
-                .map_err(|_| {
-                    ScioError::new(ErrorCode::ParseError, "invalid n_cols")
-                        .with_path(source.to_path_buf())
-                })?;
+            if field.is_none() {
+                if strict {
+                    return Err(ScioError::new(
+                        ErrorCode::ParseError,
+                        "missing %%MatrixMarket banner (use strict=false to assume `real general`)",
+                    )
+                    .with_path(source.to_path_buf()));
+                }
+                field = Some(MtxField::Real);
+            }
+            let mut cur = line;
+            let r = take_token(&mut cur)
+                .and_then(parse_uint)
+                .ok_or_else(|| header_err(source, line_no - 1))?;
+            let c = take_token(&mut cur)
+                .and_then(parse_uint)
+                .ok_or_else(|| header_err(source, line_no - 1))?;
             // Third header field: number of entries that follow. Used to
             // detect truncated files and to pre-size the triplet buffer.
-            match header.next() {
+            match take_token(&mut cur) {
                 Some(tok) => {
-                    let hint = tok.parse::<usize>().map_err(|_| {
+                    let hint = parse_uint(tok).ok_or_else(|| {
                         ScioError::new(ErrorCode::ParseError, "invalid nnz in MTX header")
                             .with_path(source.to_path_buf())
                     })?;
                     nnz_hint = Some(hint);
                     triplets.reserve(hint.min(MAX_RESERVED_ENTRIES));
                 }
-                None if strict => return Err(header_err(source, line_no)),
+                None if strict => return Err(header_err(source, line_no - 1)),
                 None => {}
             }
             SoaCscMatrix::check_dims(c, r).map_err(|e| e.with_path(source.to_path_buf()))?;
@@ -363,44 +482,27 @@ fn parse_matrix_market(
             n_cols = Some(c);
             continue;
         }
+        let field = field.unwrap_or(MtxField::Real);
 
         entries_seen += 1;
-        let mut parts = t.split_whitespace();
-        let row_1 = parts
-            .next()
-            .and_then(|s| s.parse::<usize>().ok())
-            .ok_or_else(|| {
-                ScioError::new(
-                    ErrorCode::ParseError,
-                    format!("malformed coordinate at line {}", line_no + 1),
-                )
-                .with_path(source.to_path_buf())
-            })?;
-        let col_1 = parts
-            .next()
-            .and_then(|s| s.parse::<usize>().ok())
-            .ok_or_else(|| {
-                ScioError::new(
-                    ErrorCode::ParseError,
-                    format!("malformed coordinate at line {}", line_no + 1),
-                )
-                .with_path(source.to_path_buf())
-            })?;
-        let val = parts
-            .next()
-            .and_then(|s| s.parse::<f32>().ok())
-            .ok_or_else(|| {
-                ScioError::new(
-                    ErrorCode::ParseError,
-                    format!("malformed value at line {}", line_no + 1),
-                )
-                .with_path(source.to_path_buf())
-            })?;
+        let mut cur = line;
+        let row_1 = take_token(&mut cur)
+            .and_then(parse_uint)
+            .ok_or_else(|| malformed("coordinate", line_no))?;
+        let col_1 = take_token(&mut cur)
+            .and_then(parse_uint)
+            .ok_or_else(|| malformed("coordinate", line_no))?;
+        let val = match field {
+            MtxField::Pattern => 1.0,
+            f => take_token(&mut cur)
+                .and_then(|tok| parse_value(tok, f))
+                .ok_or_else(|| malformed("value", line_no))?,
+        };
 
         if row_1 == 0 || col_1 == 0 {
             return Err(ScioError::new(
                 ErrorCode::ValidationError,
-                "MTX is 1-based; found zero index",
+                format!("MTX is 1-based; found zero index at line {line_no}"),
             )
             .with_path(source.to_path_buf()));
         }
@@ -411,10 +513,7 @@ fn parse_matrix_market(
             if strict {
                 return Err(ScioError::new(
                     ErrorCode::ValidationError,
-                    format!(
-                        "index out of range at line {} (use strict=false to drop)",
-                        line_no + 1
-                    ),
+                    format!("index out of range at line {line_no} (use strict=false to drop)"),
                 )
                 .with_path(source.to_path_buf()));
             }
@@ -426,10 +525,7 @@ fn parse_matrix_market(
             if strict {
                 return Err(ScioError::new(
                     ErrorCode::ValidationError,
-                    format!(
-                        "non-finite value at line {} (use strict=false to ignore)",
-                        line_no + 1
-                    ),
+                    format!("non-finite value at line {line_no} (use strict=false to ignore)"),
                 )
                 .with_path(source.to_path_buf()));
             }
@@ -477,6 +573,8 @@ fn parse_matrix_market(
         report,
     })
 }
+
+const UTF8_BOM_BYTES: &[u8] = "\u{feff}".as_bytes();
 
 /// Upper bound on entries pre-allocated from the header hint so a bogus
 /// header cannot trigger a multi-gigabyte allocation up front.
