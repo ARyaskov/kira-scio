@@ -101,9 +101,16 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         normalize_barcode_idx,
     )?;
 
-    let stats = parsed.stats.clone();
-    let matrix = parsed.into_csc();
+    let (matrix, merged_duplicates) = parsed.into_csc();
+    if merged_duplicates > 0 {
+        warn!(
+            path = %ds.matrix.display(),
+            merged_duplicates,
+            "MTX contained duplicate coordinates; values were summed"
+        );
+    }
     matrix.validate()?;
+    let stats = MatrixStats::from_matrix(&matrix);
 
     let metadata = InputMetadata {
         format: "mtx10x".to_string(),
@@ -155,46 +162,19 @@ fn fix_length(
     Ok(())
 }
 
-/// Intermediate triplet form; `into_csc()` sorts into CSC.
+/// Intermediate triplet form; `into_csc()` canonicalizes into CSC.
 struct ParsedMtx {
     n_genes: usize,
     n_cells: usize,
-    /// `(col, row, value)` — col first so stable sort yields CSC.
+    /// `(col, row, value)` triplets in file order.
     triplets: Vec<(u32, u32, f32)>,
-    stats: MatrixStats,
 }
 
 impl ParsedMtx {
-    fn into_csc(mut self) -> SoaCscMatrix {
-        self.triplets.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-
-        let n_cells = self.n_cells;
-        let nnz = self.triplets.len();
-        let mut col_ptr: Vec<u64> = Vec::with_capacity(n_cells + 1);
-        let mut row_idx: Vec<u32> = Vec::with_capacity(nnz);
-        let mut values: Vec<f32> = Vec::with_capacity(nnz);
-
-        col_ptr.push(0);
-        let mut cur_col: u32 = 0;
-        for (col, row, val) in self.triplets {
-            while cur_col < col {
-                col_ptr.push(row_idx.len() as u64);
-                cur_col += 1;
-            }
-            row_idx.push(row);
-            values.push(val);
-        }
-        while col_ptr.len() <= n_cells {
-            col_ptr.push(row_idx.len() as u64);
-        }
-
-        SoaCscMatrix {
-            n_cells,
-            n_genes: self.n_genes,
-            col_ptr,
-            row_idx,
-            values,
-        }
+    /// Returns the canonical matrix and the number of merged duplicate
+    /// coordinates (summed per Matrix Market convention).
+    fn into_csc(self) -> (SoaCscMatrix, usize) {
+        SoaCscMatrix::from_triplets(self.n_cells, self.n_genes, self.triplets)
     }
 }
 
@@ -206,11 +186,6 @@ fn parse_matrix_market(
     let mut n_rows = None::<usize>;
     let mut n_cols = None::<usize>;
     let mut triplets: Vec<(u32, u32, f32)> = Vec::new();
-
-    let mut nnz = 0usize;
-    let mut total = 0f64;
-    let mut min = f32::MAX;
-    let mut max = f32::MIN;
 
     let mut saw_nonfinite = false;
 
@@ -315,10 +290,6 @@ fn parse_matrix_market(
 
         if val != 0.0 {
             triplets.push((col as u32, row as u32, val));
-            nnz += 1;
-            total += val as f64;
-            min = min.min(val);
-            max = max.max(val);
         }
     }
 
@@ -336,24 +307,10 @@ fn parse_matrix_market(
         ScioError::new(ErrorCode::ParseError, "missing MTX header").with_path(source.to_path_buf())
     })?;
 
-    let sparsity = if rows == 0 || cols == 0 {
-        1.0
-    } else {
-        1.0 - (nnz as f64 / ((rows * cols) as f64))
-    };
-    let stats = MatrixStats {
-        nnz,
-        total_counts: total,
-        min_count: if nnz > 0 { min } else { 0.0 },
-        max_count: if nnz > 0 { max } else { 0.0 },
-        sparsity,
-    };
-
     Ok(ParsedMtx {
         n_genes: rows,
         n_cells: cols,
         triplets,
-        stats,
     })
 }
 

@@ -71,10 +71,6 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
     let mut duplicate_genes: Vec<String> = Vec::new();
     let mut duplicate_barcodes: Vec<String> = Vec::new();
 
-    let mut nnz = 0usize;
-    let mut total = 0f64;
-    let mut min_count = f32::MAX;
-    let mut max_count = f32::MIN;
     let mut saw_nonfinite = false;
 
     let reader = open_maybe_gz(path)?;
@@ -175,13 +171,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
                 match value {
                     ValueOutcome::Zero => {}
                     ValueOutcome::NonFinite => saw_nonfinite = true,
-                    ValueOutcome::Finite(v) => {
-                        triplets.push((col_idx, g_idx as u32, v));
-                        nnz += 1;
-                        total += v as f64;
-                        min_count = min_count.min(v);
-                        max_count = max_count.max(v);
-                    }
+                    ValueOutcome::Finite(v) => triplets.push((col_idx, g_idx as u32, v)),
                 }
             }
         } else {
@@ -219,13 +209,7 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
                 match value {
                     ValueOutcome::Zero => {}
                     ValueOutcome::NonFinite => saw_nonfinite = true,
-                    ValueOutcome::Finite(v) => {
-                        triplets.push((c_idx as u32, row_idx_value, v));
-                        nnz += 1;
-                        total += v as f64;
-                        min_count = min_count.min(v);
-                        max_count = max_count.max(v);
-                    }
+                    ValueOutcome::Finite(v) => triplets.push((c_idx as u32, row_idx_value, v)),
                 }
             }
         }
@@ -249,48 +233,11 @@ fn parse_dense(path: &Path, strict: bool) -> ScioResult<ParsedDense> {
         warn!(path = %path.display(), "non-finite values treated as zero");
     }
 
-    triplets.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    let n_cells = barcodes.len();
-    let mut col_ptr: Vec<u64> = Vec::with_capacity(n_cells + 1);
-    let mut row_idx: Vec<u32> = Vec::with_capacity(triplets.len());
-    let mut values: Vec<f32> = Vec::with_capacity(triplets.len());
-    col_ptr.push(0);
-    let mut cur_col: u32 = 0;
-    for (col, row, val) in triplets {
-        while cur_col < col {
-            col_ptr.push(row_idx.len() as u64);
-            cur_col += 1;
-        }
-        row_idx.push(row);
-        values.push(val);
-    }
-    while col_ptr.len() <= n_cells {
-        col_ptr.push(row_idx.len() as u64);
-    }
-
-    let matrix = SoaCscMatrix {
-        n_cells,
-        n_genes: gene_ids.len(),
-        col_ptr,
-        row_idx,
-        values,
-    };
+    // Coordinates are unique by construction (each gene/cell label maps to
+    // its own index even when labels repeat), so no merging happens here.
+    let (matrix, _merged) = SoaCscMatrix::from_triplets(barcodes.len(), gene_ids.len(), triplets);
     matrix.validate()?;
-
-    let total_cells = matrix.n_cells;
-    let total_genes = matrix.n_genes;
-    let sparsity = if total_cells == 0 || total_genes == 0 {
-        1.0
-    } else {
-        1.0 - (nnz as f64 / ((total_cells * total_genes) as f64))
-    };
-    let stats = MatrixStats {
-        nnz,
-        total_counts: total,
-        min_count: if nnz > 0 { min_count } else { 0.0 },
-        max_count: if nnz > 0 { max_count } else { 0.0 },
-        sparsity,
-    };
+    let stats = MatrixStats::from_matrix(&matrix);
 
     Ok(ParsedDense {
         gene_ids,
