@@ -126,6 +126,17 @@ A directory must hold a single prefixed dataset; to read one of several (`A_matr
 
 Extension first (`.mtx`, `.h5ad`, `.h5`, `.tsv`, `.csv`, `.gz` variants, BD `*_MolsPerCell.csv` and `raw_counts.tsv` names), then content sniffing for other files: a Matrix Market header, a `#`-commented table or a `Cell_Index` first column identify MTX and BD Rhapsody; everything else is a dense table. The value type is not a signal: fractional values only mean the table was normalized upstream, which `MatrixStats::is_integer` reports.
 
+## Development
+
+```bash
+cargo test                       # text formats
+cargo test --all-features        # + h5ad and 10x .h5 (needs libhdf5; set HDF5_DIR if not on the default path)
+cargo clippy --all-features --all-targets -- -D warnings
+cargo run --release --example mtx_throughput   # synthetic 10x MTX, prints MB/s for read_all
+```
+
+Integration tests write only under a per-test scratch directory that is removed on drop (`tests/common`). Property tests (`tests/proptest_csc.rs`) check the canonical-CSC invariants against a dense reference. CI runs fmt, clippy and the test matrix on Linux and macOS, and verifies that the committed HDF5 fixtures match what `generate.py` produces.
+
 ## Notes
 
 - Parsing is streaming-oriented for text formats (line-by-line).
