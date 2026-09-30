@@ -1,6 +1,6 @@
 [package]
 name = "kira-scio"
-description = "Deterministic single-cell input reader stack for MTX/H5AD/BD Rhapsody in Kira tools."
+description = "Deterministic single-cell count-matrix ingestion: 10x MTX and .h5, AnnData .h5ad, BD Rhapsody and dense tables into canonical CSC with QC marginals."
 version = "0.2.1"
 edition = "2024"
 rust-version = "1.95"
@@ -11,13 +11,13 @@ keywords = [
     "single-cell",
     "mtx",
     "h5ad",
-    "parser"
+    "anndata"
 ]
+# Library only: no binary is shipped, so no `command-line-utilities`.
 categories = [
     "science",
     "science::bioinformatics",
-    "command-line-utilities",
-    "algorithms"
+    "parser-implementations"
 ]
 
 [lib]
@@ -51,6 +51,8 @@ h5ad = ["hdf5"]
 # 10x Genomics Cell Ranger `.h5` reader (filtered/raw_feature_bc_matrix.h5).
 tenx-h5 = ["hdf5"]
 
+# Applies only to builds of this package itself (examples, tests); Cargo
+# ignores a dependency's profile, so downstream crates set their own.
 [profile.release]
 opt-level = 3
 lto = "thin"
