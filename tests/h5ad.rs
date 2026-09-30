@@ -16,6 +16,7 @@ fn lenient() -> ReaderOptions {
     ReaderOptions {
         strict: false,
         force_format: None,
+        feature_types: Default::default(),
     }
 }
 
@@ -123,6 +124,7 @@ fn structural_corruption_is_an_error_in_both_modes() {
             ReaderOptions {
                 strict,
                 force_format: None,
+                feature_types: Default::default(),
             },
         )
         .read_all()
@@ -155,4 +157,32 @@ fn gzip_compressed_h5ad_is_rejected_with_a_clear_error() {
     std::fs::write(&p, b"not really gzip").unwrap();
     let err = Reader::new(&p).read_all().unwrap_err();
     assert_eq!(err.code, ErrorCode::UnsupportedFormat);
+}
+
+#[test]
+fn feature_types_column_is_read_and_filterable() {
+    use kira_scio::FeatureTypeFilter;
+    let data = Reader::new(fixture("feature_types")).read_all().unwrap();
+    assert_eq!(
+        data.metadata.feature_types.as_deref(),
+        Some(&["Gene Expression", "Gene Expression", "Antibody Capture"].map(String::from)[..])
+    );
+    assert_eq!(data.metadata.stats.max_count, 9000.0);
+
+    let data = Reader::with_options(
+        fixture("feature_types"),
+        ReaderOptions {
+            strict: true,
+            force_format: None,
+            feature_types: FeatureTypeFilter::GeneExpression,
+        },
+    )
+    .read_all()
+    .unwrap();
+    assert_eq!(data.metadata.gene_ids, vec!["ENSG1", "ENSG2"]);
+    assert_eq!(data.matrix.col_ptr, vec![0, 1, 2]);
+    assert_eq!(data.matrix.row_idx, vec![0, 1]);
+    assert_eq!(data.matrix.values, vec![5.0, 3.0]);
+    assert_eq!(data.metadata.stats.max_count, 5.0);
+    assert_eq!(data.metadata.report.excluded_features, 1);
 }

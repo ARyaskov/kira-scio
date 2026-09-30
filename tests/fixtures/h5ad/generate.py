@@ -107,3 +107,15 @@ def write_legacy(path, fixed_width):
 
 write_legacy(f"{out}/legacy_vlen.h5ad", fixed_width=False)
 write_legacy(f"{out}/legacy_fixed.h5ad", fixed_width=True)
+
+# 10x Feature Barcoding as written by scanpy.read_10x_h5: var/feature_types is
+# categorical, one antibody feature with counts far above the gene scale.
+var_fb = pd.DataFrame(
+    {
+        "gene_symbols": ["A", "B", "CD3_TotalSeqB"],
+        "feature_types": pd.Categorical(["Gene Expression", "Gene Expression", "Antibody Capture"]),
+    },
+    index=["ENSG1", "ENSG2", "CD3_TotalSeqB"],
+)
+X_fb = np.array([[5, 0, 9000], [0, 3, 8000]], dtype=np.float32)
+write("feature_types", ad.AnnData(X=sp.csr_matrix(X_fb), obs=obs, var=var_fb))

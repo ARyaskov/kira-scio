@@ -60,16 +60,19 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
     let mut parsed = parse_matrix_market(matrix_reader, &ds.matrix, strict)?;
     let mut report = std::mem::take(&mut parsed.report);
 
-    let (mut gene_ids, mut gene_symbols) = if let Some(features_path) = ds.features.as_ref() {
-        parse_features(features_path, strict, &mut report)?
-    } else if let Some(genes_path) = ds.genes.as_ref() {
-        parse_features(genes_path, strict, &mut report)?
-    } else {
-        let synth: Vec<String> = (0..parsed.n_genes)
-            .map(|i| normalize_gene_id("", None, i))
-            .collect();
-        (synth.clone(), synth)
-    };
+    let (mut gene_ids, mut gene_symbols, feature_types) =
+        if let Some(features_path) = ds.features.as_ref() {
+            parse_features(features_path, strict, &mut report)?
+        } else if let Some(genes_path) = ds.genes.as_ref() {
+            parse_features(genes_path, strict, &mut report)?
+        } else {
+            let synth: Vec<String> = (0..parsed.n_genes)
+                .map(|i| normalize_gene_id("", None, i))
+                .collect();
+            (synth.clone(), synth, None)
+        };
+    // A type column shorter than the matrix cannot be trusted for filtering.
+    let feature_types = feature_types.filter(|t| t.len() == parsed.n_genes);
 
     report.relabeled_genes = fix_length(
         &mut gene_ids,
@@ -117,6 +120,7 @@ pub(crate) fn read_mtx(path: &Path, strict: bool) -> ScioResult<(InputMetadata, 
         gene_symbols,
         barcodes,
         stats,
+        feature_types,
         report,
     };
 
@@ -403,15 +407,21 @@ fn header_err(source: &Path, line_no: usize) -> ScioError {
     .with_path(source.to_path_buf())
 }
 
-/// Returns `(gene_ids, gene_symbols)`; single-column rows reuse the id.
+/// Returns `(gene_ids, gene_symbols, feature_types)`; single-column rows
+/// reuse the id. `feature_types` is `Some` when at least one row carries the
+/// third (`feature_type`) column of 10x v3 `features.tsv`; rows without it
+/// get an empty string.
+#[allow(clippy::type_complexity)]
 fn parse_features(
     path: &Path,
     strict: bool,
     report: &mut IngestReport,
-) -> ScioResult<(Vec<String>, Vec<String>)> {
+) -> ScioResult<(Vec<String>, Vec<String>, Option<Vec<String>>)> {
     let reader = open_maybe_gz_existing(path)?;
     let mut ids = Vec::<String>::new();
     let mut symbols = Vec::<String>::new();
+    let mut types = Vec::<String>::new();
+    let mut saw_type_column = false;
     let mut single_column_row: Option<usize> = None;
 
     for (line_no, line) in reader.lines().enumerate() {
@@ -427,14 +437,17 @@ fn parse_features(
         if t.trim().is_empty() {
             continue;
         }
-        let mut it = t.splitn(3, '\t');
+        let mut it = t.splitn(4, '\t');
         let id = it.next().unwrap_or("").trim();
         let sym = it.next().map(|s| s.trim());
+        let ty = it.next().map(|s| s.trim()).unwrap_or("");
         if sym.is_none() {
             single_column_row.get_or_insert(line_no);
         }
+        saw_type_column |= !ty.is_empty();
         ids.push(normalize_gene_id(id, sym, ids.len()));
         symbols.push(normalize_gene_symbol(id, sym, symbols.len()));
+        types.push(ty.to_string());
     }
 
     // Strict-mode: a single-column genes.tsv row is treated as malformed.
@@ -456,7 +469,7 @@ fn parse_features(
         .with_path(path.to_path_buf()));
     }
 
-    Ok((ids, symbols))
+    Ok((ids, symbols, saw_type_column.then_some(types)))
 }
 
 fn parse_barcodes(path: &Path, report: &mut IngestReport) -> ScioResult<Vec<String>> {

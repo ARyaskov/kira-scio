@@ -27,6 +27,7 @@ fn lenient(force: Option<DetectedFormat>) -> ReaderOptions {
     ReaderOptions {
         strict: false,
         force_format: force,
+        feature_types: Default::default(),
     }
 }
 

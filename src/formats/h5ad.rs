@@ -64,6 +64,8 @@ mod imp {
         "_index", "index", "barcode", "barcodes", "cell_id", "cellid",
     ];
     const GENE_ID_FALLBACKS: &[&str] = &["_index", "index", "gene_ids", "gene_id", "feature_id"];
+    /// `var` columns that may hold the 10x feature modality.
+    const FEATURE_TYPE_COLUMNS: &[&str] = &["feature_types", "feature_type"];
     /// `var` columns that may hold display symbols, in preference order.
     const GENE_SYMBOL_COLUMNS: &[&str] = &[
         "gene_symbols",
@@ -104,7 +106,15 @@ mod imp {
             .map(|(i, b)| normalize_barcode(&b, i))
             .collect::<Vec<_>>();
         let gene_raw_ids = read_index(&file, "var", GENE_ID_FALLBACKS, path)?;
-        let gene_symbols_raw = read_gene_symbols(&file, gene_raw_ids.len(), strict, path)?;
+        let gene_symbols_raw =
+            read_var_column(&file, GENE_SYMBOL_COLUMNS, gene_raw_ids.len(), strict, path)?;
+        let feature_types = read_var_column(
+            &file,
+            FEATURE_TYPE_COLUMNS,
+            gene_raw_ids.len(),
+            strict,
+            path,
+        )?;
 
         let gene_ids = gene_raw_ids
             .iter()
@@ -148,6 +158,7 @@ mod imp {
             gene_symbols,
             barcodes,
             stats,
+            feature_types,
             report,
         };
         Ok((metadata, matrix))
@@ -346,8 +357,12 @@ mod imp {
         ))
     }
 
-    fn read_gene_symbols(
+    /// Reads the first present `var` string column among `candidates`. A
+    /// column that exists but cannot be read or has the wrong length is an
+    /// error in strict mode and is skipped with a warning otherwise.
+    fn read_var_column(
         file: &File,
+        candidates: &[&str],
         n_genes: usize,
         strict: bool,
         source: &Path,
@@ -355,27 +370,25 @@ mod imp {
         let Ok(var) = file.group("var") else {
             return Ok(None);
         };
-        for col in GENE_SYMBOL_COLUMNS {
+        for col in candidates {
             if !var.link_exists(col) {
                 continue;
             }
-            match read_string_column(&var, col, source) {
-                Ok(syms) if syms.len() == n_genes => return Ok(Some(syms)),
-                Ok(syms) => {
-                    let err = parse_err(
-                        format!("var/{col} has {} entries, expected {n_genes}", syms.len()),
+            let outcome = read_string_column(&var, col, source).and_then(|values| {
+                if values.len() == n_genes {
+                    Ok(values)
+                } else {
+                    Err(parse_err(
+                        format!("var/{col} has {} entries, expected {n_genes}", values.len()),
                         source,
-                    );
-                    if strict {
-                        return Err(err);
-                    }
-                    warn!(path = %source.display(), column = col, "ignoring gene symbol column: {err}");
+                    ))
                 }
+            });
+            match outcome {
+                Ok(values) => return Ok(Some(values)),
+                Err(err) if strict => return Err(err),
                 Err(err) => {
-                    if strict {
-                        return Err(err);
-                    }
-                    warn!(path = %source.display(), column = col, "ignoring gene symbol column: {err}");
+                    warn!(path = %source.display(), column = col, "ignoring var column: {err}");
                 }
             }
         }

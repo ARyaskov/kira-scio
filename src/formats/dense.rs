@@ -24,6 +24,7 @@ pub fn read_metadata(path: &Path, strict: bool) -> ScioResult<InputMetadata> {
         gene_symbols: parsed.gene_symbols,
         barcodes: parsed.barcodes,
         stats: parsed.stats,
+        feature_types: None,
         report: parsed.report,
     })
 }
@@ -46,6 +47,7 @@ pub(crate) fn parse_dense_full(
         gene_symbols: parsed.gene_symbols,
         barcodes: parsed.barcodes,
         stats: parsed.stats,
+        feature_types: None,
         report: parsed.report,
     };
     Ok((metadata, parsed.matrix))

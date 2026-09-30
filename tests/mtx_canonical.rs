@@ -122,6 +122,7 @@ fn entry_count_mismatch_is_tolerated_in_lenient_mode() {
         ReaderOptions {
             strict: false,
             force_format: None,
+            feature_types: Default::default(),
         },
     )
     .read_all()
@@ -155,6 +156,7 @@ fn header_without_entry_count_is_rejected_in_strict_mode() {
         ReaderOptions {
             strict: false,
             force_format: None,
+            feature_types: Default::default(),
         },
     )
     .read_all()

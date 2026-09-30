@@ -87,6 +87,51 @@ impl SoaCscMatrix {
         Ok(())
     }
 
+    /// Returns a copy that keeps only the genes (rows) flagged in `keep`,
+    /// renumbering the surviving rows in order. `keep.len()` must equal
+    /// `n_genes`. Canonical form is preserved.
+    pub fn retain_genes(&self, keep: &[bool]) -> ScioResult<Self> {
+        if keep.len() != self.n_genes {
+            return Err(ScioError::new(
+                ErrorCode::ValidationError,
+                format!(
+                    "retain_genes mask has {} entries, expected {}",
+                    keep.len(),
+                    self.n_genes
+                ),
+            ));
+        }
+        let mut new_index: Vec<u32> = vec![u32::MAX; self.n_genes];
+        let mut next = 0u32;
+        for (i, &k) in keep.iter().enumerate() {
+            if k {
+                new_index[i] = next;
+                next += 1;
+            }
+        }
+        let mut col_ptr: Vec<u64> = Vec::with_capacity(self.n_cells + 1);
+        let mut row_idx: Vec<u32> = Vec::with_capacity(self.row_idx.len());
+        let mut values: Vec<f32> = Vec::with_capacity(self.values.len());
+        col_ptr.push(0);
+        for w in self.col_ptr.windows(2) {
+            for k in w[0] as usize..w[1] as usize {
+                let mapped = new_index[self.row_idx[k] as usize];
+                if mapped != u32::MAX {
+                    row_idx.push(mapped);
+                    values.push(self.values[k]);
+                }
+            }
+            col_ptr.push(row_idx.len() as u64);
+        }
+        Ok(Self {
+            n_cells: self.n_cells,
+            n_genes: next as usize,
+            col_ptr,
+            row_idx,
+            values,
+        })
+    }
+
     /// Builds a canonical CSC matrix from `(col, row, value)` triplets.
     ///
     /// Duplicate coordinates are summed (Matrix Market / SciPy convention) and
@@ -233,6 +278,10 @@ pub struct IngestReport {
     pub entry_count_mismatch: Option<CountMismatch>,
     /// A UTF-8 byte order mark was removed from at least one text input.
     pub bom_stripped: bool,
+    /// Features removed by the caller's [`crate::FeatureTypeFilter`]. This is
+    /// a requested selection, not a repair, so it affects neither
+    /// [`Self::is_lossless`] nor [`Self::is_clean`].
+    pub excluded_features: usize,
 }
 
 impl IngestReport {
@@ -266,6 +315,10 @@ pub struct InputMetadata {
     pub gene_symbols: Vec<String>,
     pub barcodes: Vec<String>,
     pub stats: MatrixStats,
+    /// Per-feature modality as declared by the source (10x `features.tsv`
+    /// third column, anndata `var/feature_types`), e.g. `Gene Expression`,
+    /// `Antibody Capture`. `None` when the source carries no such column.
+    pub feature_types: Option<Vec<String>>,
     /// What the reader tolerated or repaired; see [`IngestReport`].
     pub report: IngestReport,
 }
@@ -350,6 +403,36 @@ mod tests {
             ..base.clone()
         };
         assert!(bad_start.validate().is_err());
+    }
+
+    #[test]
+    fn retain_genes_renumbers_rows_and_keeps_canonical_form() {
+        // 2 cells x 4 genes; keep genes 1 and 3.
+        let (m, _) = SoaCscMatrix::from_triplets(
+            2,
+            4,
+            vec![
+                (0, 0, 1.0),
+                (0, 1, 2.0),
+                (0, 3, 3.0),
+                (1, 2, 4.0),
+                (1, 3, 5.0),
+            ],
+        );
+        let r = m.retain_genes(&[false, true, false, true]).unwrap();
+        assert_eq!(r.n_genes, 2);
+        assert_eq!(r.n_cells, 2);
+        assert_eq!(r.col_ptr, vec![0, 2, 3]);
+        assert_eq!(r.row_idx, vec![0, 1, 1]);
+        assert_eq!(r.values, vec![2.0, 3.0, 5.0]);
+        r.validate().unwrap();
+
+        let none = m.retain_genes(&[false; 4]).unwrap();
+        assert_eq!(none.n_genes, 0);
+        assert_eq!(none.col_ptr, vec![0, 0, 0]);
+        none.validate().unwrap();
+
+        assert!(m.retain_genes(&[true; 3]).is_err());
     }
 
     #[test]

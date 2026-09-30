@@ -60,6 +60,7 @@ fn s2_duplicate_genes_are_kept_in_strict() {
         ReaderOptions {
             strict: true,
             force_format: Some(DetectedFormat::BdRhapsodyWta),
+            feature_types: Default::default(),
         },
     )
     .read_all()
@@ -117,6 +118,7 @@ fn s4_empty_first_header_cell() {
         ReaderOptions {
             strict: true,
             force_format: Some(DetectedFormat::DenseTsvCsv),
+            feature_types: Default::default(),
         },
     )
     .read_all()
@@ -134,6 +136,7 @@ fn s5_strict_rejects_non_finite() {
         ReaderOptions {
             strict: true,
             force_format: Some(DetectedFormat::DenseTsvCsv),
+            feature_types: Default::default(),
         },
     )
     .read_all()
