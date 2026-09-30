@@ -13,6 +13,8 @@ pub enum DetectedFormat {
     BdRhapsodyWta,
     DenseTsvCsv,
     H5ad,
+    /// 10x Genomics Cell Ranger `.h5` matrix (`*_feature_bc_matrix.h5`).
+    TenxH5,
     Loom,
 }
 
@@ -53,6 +55,9 @@ pub fn detect_input_format(path: &Path) -> ScioResult<DetectedFormat> {
     }
     if name.ends_with(".loom") {
         return Ok(DetectedFormat::Loom);
+    }
+    if name.ends_with(".h5") || name.ends_with(".hdf5") {
+        return Ok(DetectedFormat::TenxH5);
     }
 
     if filename_is_bd_counts(&name) {

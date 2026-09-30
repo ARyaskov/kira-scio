@@ -57,12 +57,15 @@ pub(crate) use imp::read_all;
 mod imp {
     use std::path::Path;
 
-    use hdf5::types::{FixedAscii, FixedUnicode, TypeDescriptor, VarLenAscii, VarLenUnicode};
-    use hdf5::{Dataset, File, Group, Location};
+    use hdf5::{Dataset, File, Group};
     use tracing::warn;
 
     use crate::api::H5adSource;
     use crate::error::{ErrorCode, ScioError, ScioResult};
+    use crate::formats::hdf5_util::{
+        MajorAxis, compressed_to_csc, hdf5_err, parse_err, read_attr_string, read_bool_dataset,
+        read_string_dataset,
+    };
     use crate::model::{IngestReport, InputMetadata, MatrixStats, SoaCscMatrix};
     use crate::normalize::{normalize_barcode, normalize_gene_id, normalize_gene_symbol};
 
@@ -81,14 +84,6 @@ mod imp {
         "gene_name",
         "symbol",
     ];
-
-    fn parse_err(msg: impl Into<String>, source: &Path) -> ScioError {
-        ScioError::new(ErrorCode::ParseError, msg).with_path(source.to_path_buf())
-    }
-
-    fn hdf5_err(e: hdf5::Error, source: &Path) -> ScioError {
-        parse_err(e.to_string(), source)
-    }
 
     pub(crate) fn read_all(
         path: &Path,
@@ -197,79 +192,6 @@ mod imp {
         Ok((metadata, matrix))
     }
 
-    // ---------------------------------------------------------------- strings
-
-    /// Reads a string dataset regardless of whether it is stored as
-    /// variable-length or fixed-length, ASCII or UTF-8.
-    fn read_string_dataset(ds: &Dataset, source: &Path) -> ScioResult<Vec<String>> {
-        let desc = ds
-            .dtype()
-            .and_then(|t| t.to_descriptor())
-            .map_err(|e| hdf5_err(e, source))?;
-        macro_rules! fixed {
-            ($ty:ident, $n:expr) => {{
-                // HDF5 converts between fixed-length string widths; pick the
-                // smallest bucket that fits so buffers stay small.
-                match $n {
-                    0..=32 => ds.read_raw::<$ty<32>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
-                    33..=128 => ds.read_raw::<$ty<128>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
-                    129..=512 => ds.read_raw::<$ty<512>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
-                    513..=2048 => ds.read_raw::<$ty<2048>>().map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
-                    n => {
-                        return Err(parse_err(
-                            format!("fixed-length string width {n} exceeds the supported maximum of 2048"),
-                            source,
-                        ));
-                    }
-                }
-            }};
-        }
-        let out: hdf5::Result<Vec<String>> = match desc {
-            TypeDescriptor::VarLenUnicode => ds
-                .read_raw::<VarLenUnicode>()
-                .map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
-            TypeDescriptor::VarLenAscii => ds
-                .read_raw::<VarLenAscii>()
-                .map(|v| v.iter().map(|s| s.as_str().to_string()).collect()),
-            TypeDescriptor::FixedAscii(n) => fixed!(FixedAscii, n),
-            TypeDescriptor::FixedUnicode(n) => fixed!(FixedUnicode, n),
-            other => {
-                return Err(parse_err(
-                    format!("expected a string dataset, found {other}"),
-                    source,
-                ));
-            }
-        };
-        out.map_err(|e| hdf5_err(e, source))
-    }
-
-    /// Reads a scalar string attribute (variable- or fixed-length).
-    fn read_attr_string(loc: &Location, name: &str, source: &Path) -> ScioResult<Option<String>> {
-        let Ok(attr) = loc.attr(name) else {
-            return Ok(None);
-        };
-        let desc = attr
-            .dtype()
-            .and_then(|t| t.to_descriptor())
-            .map_err(|e| hdf5_err(e, source))?;
-        let value: hdf5::Result<String> = match desc {
-            TypeDescriptor::VarLenUnicode => attr
-                .read_scalar::<VarLenUnicode>()
-                .map(|s| s.as_str().to_string()),
-            TypeDescriptor::VarLenAscii => attr
-                .read_scalar::<VarLenAscii>()
-                .map(|s| s.as_str().to_string()),
-            TypeDescriptor::FixedAscii(n) if n <= 512 => attr
-                .read_scalar::<FixedAscii<512>>()
-                .map(|s| s.as_str().to_string()),
-            TypeDescriptor::FixedUnicode(n) if n <= 512 => attr
-                .read_scalar::<FixedUnicode<512>>()
-                .map(|s| s.as_str().to_string()),
-            _ => return Ok(None),
-        };
-        value.map(Some).map_err(|e| hdf5_err(e, source))
-    }
-
     /// Reads one string column of an anndata dataframe group. Missing values
     /// (nullable mask, negative categorical code) become empty strings so the
     /// caller can synthesize a label.
@@ -340,17 +262,6 @@ mod imp {
             )
             .with_path(source.to_path_buf())),
         }
-    }
-
-    /// h5py stores booleans as an int8-backed enum; fall back to raw int8
-    /// when the enum conversion is unavailable.
-    fn read_bool_dataset(ds: &Dataset, source: &Path) -> ScioResult<Vec<bool>> {
-        if let Ok(v) = ds.read_raw::<bool>() {
-            return Ok(v);
-        }
-        ds.read_raw::<i8>()
-            .map(|v| v.into_iter().map(|b| b != 0).collect())
-            .map_err(|e| hdf5_err(e, source))
     }
 
     /// Resolves the index column of `obs` or `var`: the `_index` attribute
@@ -451,19 +362,11 @@ mod imp {
         ))
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum SparseLayout {
-        /// Rows are cells (`indptr` has `n_cells + 1` entries).
-        Csr,
-        /// Rows are genes (`indptr` has `n_genes + 1` entries).
-        Csc,
-    }
-
-    fn sparse_layout(group: &Group, source: &Path) -> ScioResult<SparseLayout> {
+    fn sparse_layout(group: &Group, source: &Path) -> ScioResult<MajorAxis> {
         if let Some(enc) = read_attr_string(group, "encoding-type", source)? {
             return match enc.as_str() {
-                "csr_matrix" => Ok(SparseLayout::Csr),
-                "csc_matrix" => Ok(SparseLayout::Csc),
+                "csr_matrix" => Ok(MajorAxis::Cells),
+                "csc_matrix" => Ok(MajorAxis::Genes),
                 other => Err(ScioError::new(
                     ErrorCode::UnsupportedFormat,
                     format!("unsupported H5AD matrix encoding: {other}"),
@@ -474,8 +377,8 @@ mod imp {
         // anndata < 0.7 wrote `h5sparse_format` instead of `encoding-type`.
         if let Some(fmt) = read_attr_string(group, "h5sparse_format", source)? {
             return match fmt.as_str() {
-                "csr" => Ok(SparseLayout::Csr),
-                "csc" => Ok(SparseLayout::Csc),
+                "csr" => Ok(MajorAxis::Cells),
+                "csc" => Ok(MajorAxis::Genes),
                 other => Err(ScioError::new(
                     ErrorCode::UnsupportedFormat,
                     format!("unsupported h5sparse_format: {other}"),
@@ -483,7 +386,7 @@ mod imp {
                 .with_path(source.to_path_buf())),
             };
         }
-        Ok(SparseLayout::Csr)
+        Ok(MajorAxis::Cells)
     }
 
     fn read_shape(group: &Group, source: &Path) -> ScioResult<(usize, usize)> {
@@ -506,114 +409,9 @@ mod imp {
     ) -> ScioResult<SoaCscMatrix> {
         let layout = sparse_layout(group, source)?;
         let (n_cells, n_genes) = read_shape(group, source)?;
-        SoaCscMatrix::check_dims(n_cells, n_genes)
-            .map_err(|e| e.with_path(source.to_path_buf()))?;
-
-        let read_i64 = |name: &str| -> ScioResult<Vec<i64>> {
-            group
-                .dataset(name)
-                .map_err(|_| parse_err(format!("missing /X/{name}"), source))?
-                .read_raw::<i64>()
-                .map_err(|e| hdf5_err(e, source))
-        };
-        let indptr = read_i64("indptr")?;
-        let indices = read_i64("indices")?;
-        let data: Vec<f32> = group
-            .dataset("data")
-            .map_err(|_| parse_err("missing /X/data", source))?
-            .read_raw()
-            .map_err(|e| hdf5_err(e, source))?;
-
-        let (major, minor) = match layout {
-            SparseLayout::Csr => (n_cells, n_genes),
-            SparseLayout::Csc => (n_genes, n_cells),
-        };
-
-        // Structural integrity: always an error, independent of strictness.
-        if indptr.len() != major + 1 {
-            return Err(parse_err(
-                format!(
-                    "/X/indptr has {} entries, expected {}",
-                    indptr.len(),
-                    major + 1
-                ),
-                source,
-            ));
-        }
-        if indptr.first().copied() != Some(0) || indptr.windows(2).any(|w| w[0] > w[1]) {
-            return Err(parse_err(
-                "/X/indptr must start at 0 and be non-decreasing",
-                source,
-            ));
-        }
-        if indices.len() != data.len() {
-            return Err(parse_err(
-                format!(
-                    "/X/indices ({}) and /X/data ({}) length mismatch",
-                    indices.len(),
-                    data.len()
-                ),
-                source,
-            ));
-        }
-        if *indptr.last().unwrap_or(&0) as usize != indices.len() {
-            return Err(parse_err(
-                "/X/indptr tail does not match /X/indices length",
-                source,
-            ));
-        }
-        if indices.iter().any(|&i| i < 0) {
-            return Err(parse_err("/X/indices contains a negative index", source));
-        }
-
-        let mut triplets: Vec<(u32, u32, f32)> = Vec::with_capacity(data.len());
-        for major_i in 0..major {
-            let start = indptr[major_i] as usize;
-            let end = indptr[major_i + 1] as usize;
-            for k in start..end {
-                let minor_i = indices[k] as usize;
-                let val = data[k];
-                if minor_i >= minor {
-                    if strict {
-                        return Err(ScioError::new(
-                            ErrorCode::ValidationError,
-                            format!(
-                                "/X/indices[{k}] = {minor_i} is out of range for shape {n_cells}x{n_genes} \
-                                 (use strict=false to drop)"
-                            ),
-                        )
-                        .with_path(source.to_path_buf()));
-                    }
-                    report.dropped_out_of_range += 1;
-                    continue;
-                }
-                if !val.is_finite() {
-                    if strict {
-                        return Err(ScioError::new(
-                            ErrorCode::ValidationError,
-                            format!("non-finite value in /X/data[{k}] (use strict=false to drop)"),
-                        )
-                        .with_path(source.to_path_buf()));
-                    }
-                    report.dropped_non_finite += 1;
-                    continue;
-                }
-                if val == 0.0 {
-                    report.explicit_zeros += 1;
-                    continue;
-                }
-                let (cell, gene) = match layout {
-                    SparseLayout::Csr => (major_i, minor_i),
-                    SparseLayout::Csc => (minor_i, major_i),
-                };
-                triplets.push((cell as u32, gene as u32, val));
-            }
-        }
-
-        let (matrix, merged) = SoaCscMatrix::from_triplets(n_cells, n_genes, triplets);
-        report.merged_duplicates = merged;
-        matrix.validate()?;
-        Ok(matrix)
+        compressed_to_csc(
+            group, "/X", layout, n_cells, n_genes, strict, source, report,
+        )
     }
 
     fn read_dense_x(

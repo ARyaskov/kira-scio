@@ -138,6 +138,7 @@ impl Reader {
             DetectedFormat::H5ad => {
                 crate::formats::h5ad::read_all(&self.input, strict, &self.options.h5ad_source)?
             }
+            DetectedFormat::TenxH5 => crate::formats::tenx_h5::read_all(&self.input, strict)?,
             DetectedFormat::Loom => {
                 // Stub backend; surfaces FeatureDisabled.
                 let m = crate::formats::loom::read_metadata(&self.input, strict)?;

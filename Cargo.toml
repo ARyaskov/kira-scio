@@ -44,7 +44,12 @@ optional = true
 
 [features]
 default = []
-h5ad = ["dep:hdf5"]
+# HDF5 bindings shared by the HDF5-based readers.
+hdf5 = ["dep:hdf5"]
+# AnnData `.h5ad` reader.
+h5ad = ["hdf5"]
+# 10x Genomics Cell Ranger `.h5` reader (filtered/raw_feature_bc_matrix.h5).
+tenx-h5 = ["hdf5"]
 
 [profile.release]
 opt-level = 3

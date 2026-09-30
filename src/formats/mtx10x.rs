@@ -179,7 +179,7 @@ pub(crate) fn log_report(source: &Path, report: &IngestReport) {
 
 /// Resizes a label vector to the matrix dimension. Returns the recorded
 /// mismatch in lenient mode; strict mode errors instead.
-fn fix_length(
+pub(crate) fn fix_length(
     out: &mut Vec<String>,
     expected: usize,
     strict: bool,
